@@ -156,8 +156,9 @@ def short_txid(txid: str, len=4) -> str:
     return f"{txid[:len]}..{txid[-len:]}"
 
 
-def has_free_bw(account, tx_bw, use_only_staked=False):
-    acc_res = ConnectionManager.client().get_account_resource(account)
+def has_free_bw(account, tx_bw, use_only_staked=False, tron_client=None):
+    client = tron_client or ConnectionManager.client()
+    acc_res = client.get_account_resource(account)
     daily_bw = acc_res.get("freeNetLimit", 0) - acc_res.get("freeNetUsed", 0)
     staked_bw = acc_res.get("NetLimit", 0) - acc_res.get("NetUsed", 0)
     logger.info(f"Account {account} has {staked_bw=} {daily_bw=}")

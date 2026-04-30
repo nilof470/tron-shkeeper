@@ -186,7 +186,7 @@ def transfer_trc20_from(onetime_acc, symbol):
             logger.info(f"Estimated bandwidth requirement: {need_bw}")
 
             logger.info("Check energy delegator bandwidth")
-            if has_free_bw(energy_delegator_pub, need_bw):
+            if has_free_bw(energy_delegator_pub, need_bw, tron_client=tron_client):
                 logger.info("Using free bandwidth")
             else:
                 logger.info("Not enough free bandwidth")
@@ -222,7 +222,10 @@ def transfer_trc20_from(onetime_acc, symbol):
 
             logger.info("Check main account free bandwidth")
             if has_free_bw(
-                main_publ_key, config.BANDWIDTH_PER_TRX_TRANSFER, use_only_staked=True
+                main_publ_key,
+                config.BANDWIDTH_PER_TRX_TRANSFER,
+                use_only_staked=True,
+                tron_client=tron_client,
             ):
                 logger.info("Using main account free bandwidth")
             else:
@@ -356,7 +359,9 @@ def transfer_trc20_from(onetime_acc, symbol):
             # from one_time to fee_deposit account
             if not used_trx_burn_fallback:
                 if not has_free_bw(
-                    onetime_publ_key, config.BANDWIDTH_PER_TRC20_TRANSFER_CALL
+                    onetime_publ_key,
+                    config.BANDWIDTH_PER_TRC20_TRANSFER_CALL,
+                    tron_client=tron_client,
                 ):
                     logger.warning(
                         "One-time account has no bandwidth. Terminating transfer."

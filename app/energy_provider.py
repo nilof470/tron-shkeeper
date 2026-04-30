@@ -287,7 +287,7 @@ class RefeeEnergyProvider(EnergyProvider):
                 logger.info(f"re:Fee order {order_id} status: {status}")
                 last_status = status
 
-            if status == "delegated":
+            if status in self.SUCCESS_STATUSES:
                 return order
             if status in self.FAILURE_STATUSES:
                 logger.warning(f"re:Fee order {order_id} failed: {order}")
