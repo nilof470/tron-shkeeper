@@ -219,6 +219,34 @@ Energy successfuly delegated
 
 None observed in the refactored code path. The first local-stub attempt used syntactically invalid fake TRON addresses and failed inside `trx_abi.encode_single` before reaching provider code; the stub was corrected to generate valid base58 TRON addresses from `tronpy.keys.PrivateKey`.
 
+## Post-review fix verification
+
+**Date:** 2026-04-30T13:13:42Z  
+**Reason:** `01-REVIEW.md` identified that `StakingEnergyProvider.acquire()` selected a second `ConnectionManager.client()` instead of reusing the sweep's already-selected `tron_client`.
+
+### RED check before fix
+
+The regression stub allowed only one `ConnectionManager.client()` call during `transfer_trc20_from()`. Before the fix, it failed at provider acquire:
+
+```text
+AssertionError: second ConnectionManager.client() call
+```
+
+### GREEN check after fix
+
+After `f68e27f`, `transfer_trc20_from()` passes `tron_client` into `get_energy_provider(tron_client=tron_client)`, and `StakingEnergyProvider.acquire()` reuses it.
+
+```text
+OK: Mode B smoke reused selected client and completed acquire/transfer/release
+connection_manager_client_calls= 1
+delegate_resource_call= call(owner='TEdea7WvtoCNceWPwaz7JbkBjbb6omTQcL', receiver='THHsfg2eNiv6MSXC4y5d4t5wkvRVADRKiF', balance=650000000, resource='ENERGY')
+result= {'tx_trx_res': None, 'tx_token': {'result': True, 'txid': 'TOKEN_TX'}}
+```
+
+### Cleanup
+
+`4902690` removed stale `json` and `math` imports from `app/tasks.py`; AST checks confirmed neither name is referenced in the file.
+
 ## Human verification
 
 **Status:** PENDING
