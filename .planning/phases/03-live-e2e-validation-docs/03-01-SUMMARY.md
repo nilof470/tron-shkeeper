@@ -24,6 +24,8 @@ application code.
   - generates a sidecar-controlled onetime wallet;
   - checks USDT/TRX/account-resource readiness;
   - can run `transfer_trc20_from(..., "USDT")` after explicit `--yes`.
+- Added production-facing re:Fee setup and operations documentation to
+  `README.md`.
 
 ## Generated Test Wallet
 
@@ -83,6 +85,4 @@ recover or delegate/rent bandwidth to that onetime address, then retry.
 
 ## Next
 
-Convert the Phase 3 runbook findings into production operator documentation:
-account activation and bandwidth are separate prerequisites from re:Fee energy
-rental.
+Run final branch review before ship/merge.

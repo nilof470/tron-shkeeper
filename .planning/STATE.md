@@ -4,7 +4,7 @@
 
 ## Current position
 
-Phase 1 is complete on `gsd-phase-1-energyprovider-abstraction`. Plans 01-03 are complete; structural checks, Mode B local-stub smoke, post-review regression verification, and human approval are recorded. Phase 1.5 spike 003 is live-validated in the companion repo: a test re:Fee `rent_resource` order reached `delegated` and on-chain energy was confirmed. Phase 2 is implemented, code-reviewed, hardened, and structurally verified with mocked re:Fee smokes plus live order lifecycle validation. Phase 3 live e2e has passed: a real USDT-TRC20 sweep used re:Fee energy and moved `3 USDT` from the generated onetime wallet to fee_deposit with zero TRX burned for the USDT transfer. Production operator docs remain.
+Phase 1 is complete on `gsd-phase-1-energyprovider-abstraction`. Plans 01-03 are complete; structural checks, Mode B local-stub smoke, post-review regression verification, and human approval are recorded. Phase 1.5 spike 003 is live-validated in the companion repo: a test re:Fee `rent_resource` order reached `delegated` and on-chain energy was confirmed. Phase 2 is implemented, code-reviewed, hardened, and structurally verified with mocked re:Fee smokes plus live order lifecycle validation. Phase 3 is complete: a real USDT-TRC20 sweep used re:Fee energy and moved `3 USDT` from the generated onetime wallet to fee_deposit with zero TRX burned for the USDT transfer, and `README.md` now documents re:Fee setup, activation, bandwidth, retry behavior, and Helm/container env overrides.
 
 ## Memory across sessions
 
@@ -26,7 +26,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 
 - Refund behavior on `failed`/`insufficient_funds` — does balance return to user account?
 - Error body shape (assume free-form text; tighten if structured).
-- Production docs: add a `README.md` section for `ENERGY_SOURCE=refee`, `REFEE` JSON config, activation/bandwidth prerequisites, and retry behavior.
+- Final branch review before ship/merge.
 
 ## Recent work
 
@@ -48,6 +48,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - 2026-04-30: Phase 3 prep artifacts created. Generated sidecar-controlled onetime address `TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7` in `/tmp/tron-shkeeper-phase3-e2e/database.db`; initial check shows private key present, account inactive, `0` USDT, `0` TRX.
 - 2026-04-30: Phase 3 live e2e succeeded. Onetime `TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7` swept `3 USDT` to fee_deposit `TRfonfrf1AqFzXqJTpad8Tz4EzvCBhZe5k`. Successful USDT tx: `9bdfabfee0c57508c0a58d1521c6f512ecb07f54eff219a8f56cf81f3b10634f`. The successful transfer used `130285` energy and `345` bandwidth; onetime ended with `0 USDT`, `0 TRX`.
 - 2026-04-30: Live e2e exposed bandwidth as a separate prerequisite from re:Fee energy. Commit `3b550e8` moved the onetime bandwidth precheck before energy estimation/re:Fee rental, so low-bandwidth repeat sweeps stop before creating a paid re:Fee order.
+- 2026-04-30: Production operator docs added in `README.md`: `ENERGY_SOURCE=refee`, `REFEE` JSON, activation/bandwidth behavior, burn fallback flags, Helm/container env examples, and live validation evidence.
 
 ## Repo state
 
@@ -65,4 +66,4 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 
 ## Next action
 
-Recommended next action: update production operator documentation in `README.md` for enabling re:Fee and explaining bandwidth/activation behavior.
+Recommended next action: run final branch review and then prepare the work for ship/merge.

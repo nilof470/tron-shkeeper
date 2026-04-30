@@ -79,7 +79,7 @@
 
 ## Phase 3 — Live e2e validation + docs (was spike 004)
 
-**Status:** Live e2e passed — production operator docs pending.
+**Status:** Complete — live e2e passed and operator docs added.
 
 **Goal:** Real end-to-end test on TRON mainnet: a fresh user-wallet with a small USDT balance, sidecar configured with `ENERGY_SOURCE=refee`, observe the full sweep with zero TRX burned. Update operator docs.
 
@@ -96,7 +96,7 @@
 
 **Done when:**
 - [x] One real USDT-TRC20 sweep completes via re:Fee with zero TRX burned for the USDT transfer, recorded with tx hashes.
-- [ ] Operator docs explain how to enable re:Fee in their helm `values.yaml`.
+- [x] Operator docs explain how to enable re:Fee in their helm `values.yaml`.
 
 **Risk:** Low (assumes Phase 2 passed). Cost: ~5–10 USDT for the test sweep + ~3 TRX re:Fee balance.
 
