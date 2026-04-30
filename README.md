@@ -20,7 +20,7 @@ Core services:
 Typical local commands:
 
 ```bash
-python run.py
+gunicorn run:server
 celery -A celery_worker.celery worker -E --loglevel=info
 ```
 
