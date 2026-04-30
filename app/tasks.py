@@ -84,6 +84,44 @@ def payout(steps, symbol):
     return payout_results
 
 
+def _fund_onetime_for_trc20_burn(
+    tron_client,
+    main_publ_key,
+    main_priv_key,
+    onetime_publ_key,
+    balance,
+    symbol,
+    min_threshold,
+):
+    logger.info("Transferring TRC20 tokens from onetime to main in TRX burning mode")
+    logger.info(
+        f"Transfer to main acc started for {onetime_publ_key}. Balance: "
+        f"{balance} {symbol}. Threshold is {min_threshold} {symbol}"
+    )
+
+    main_acc_balance = tron_client.get_account_balance(main_publ_key)
+
+    if main_acc_balance < config.get_internal_trc20_tx_fee():
+        logger.warning(
+            f"Main account hasn't enough currency: balance: {main_acc_balance} need: {config.get_internal_trc20_tx_fee()}.  Terminating transfer."
+        )
+        return False, None
+
+    tx_trx = tron_client.trx.transfer(
+        main_publ_key,
+        onetime_publ_key,
+        int(config.get_internal_trc20_tx_fee() * 1_000_000),
+    )
+    tx_trx._raw_data["expiration"] = current_timestamp() + 60_000
+    tx_trx = tx_trx.build()
+    tx_trx = tx_trx.sign(main_priv_key)
+    tx_trx_res = tx_trx.broadcast().wait()
+    logger.info(
+        f"Fee sent to {onetime_publ_key} with TXID {tx_trx.txid}. Details: {tx_trx_res}"
+    )
+    return True, tx_trx_res
+
+
 @celery.task()
 def transfer_trc20_from(onetime_acc, symbol):
     """
@@ -104,12 +142,17 @@ def transfer_trc20_from(onetime_acc, symbol):
         )
         return False
 
-    energy_delegator_priv, energy_delegator_pub = get_energy_delegator()
     onetime_priv_key, onetime_publ_key = get_key(KeyType.onetime, pub=onetime_acc)
 
     token_balance = contract.functions.balanceOf(onetime_publ_key)
 
     tx_trx_res = None
+    used_trx_burn_fallback = False
+    use_refee_energy_provider = config.ENERGY_SOURCE == "refee"
+    use_staking_energy_provider = (
+        config.ENERGY_SOURCE == "staking" and config.ENERGY_DELEGATION_MODE
+    )
+    use_energy_provider = use_refee_energy_provider or use_staking_energy_provider
 
     logger.info(f"Check ONETIME={onetime_publ_key} {symbol} balance")
     min_threshold = config.get_min_transfer_threshold(symbol)
@@ -124,33 +167,36 @@ def transfer_trc20_from(onetime_acc, symbol):
             f"Balance OK: {balance} {symbol}. Threshold: {min_threshold} {symbol}"
         )
 
-    if config.ENERGY_DELEGATION_MODE:
+    if use_energy_provider:
         # Bind once for both acquire (delegation) and release (post-transfer undelegate) calls.
         provider = get_energy_provider(tron_client=tron_client)
+        logger.info(f"Using energy provider source: {config.ENERGY_SOURCE}")
 
         logger.info(
             f"Initiating TRC20 tokens transfer from ONETIME={onetime_publ_key} to MAIN={main_publ_key} in ENERGY DELEGATION MODE"
         )
 
-        need_bw = (
-            config.BANDWIDTH_PER_DELEGE_CALL
-            + config.BANDWIDTH_PER_UNDELEGATE_CALL
-            + config.BANDWIDTH_PER_TRX_TRANSFER
-        )
-        logger.info(f"Estimated bandwidth requirement: {need_bw}")
+        if use_staking_energy_provider:
+            _, energy_delegator_pub = get_energy_delegator()
+            need_bw = (
+                config.BANDWIDTH_PER_DELEGE_CALL
+                + config.BANDWIDTH_PER_UNDELEGATE_CALL
+                + config.BANDWIDTH_PER_TRX_TRANSFER
+            )
+            logger.info(f"Estimated bandwidth requirement: {need_bw}")
 
-        logger.info("Check energy delegator bandwidth")
-        if has_free_bw(energy_delegator_pub, need_bw):
-            logger.info("Using free bandwidth")
-        else:
-            logger.info("Not enough free bandwidth")
-            if config.ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH:
-                logger.info("Burning TRX for bandwidth")
+            logger.info("Check energy delegator bandwidth")
+            if has_free_bw(energy_delegator_pub, need_bw):
+                logger.info("Using free bandwidth")
             else:
-                logger.warning(
-                    "Burning TRX for bandwidth is not allowed. Terminating transfer."
-                )
-                return
+                logger.info("Not enough free bandwidth")
+                if config.ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH:
+                    logger.info("Burning TRX for bandwidth")
+                else:
+                    logger.warning(
+                        "Burning TRX for bandwidth is not allowed. Terminating transfer."
+                    )
+                    return
 
         try:
             onetime_address_resources = tron_client.get_account_resource(
@@ -284,47 +330,50 @@ def transfer_trc20_from(onetime_acc, symbol):
                     onetime_address_resources,
                     minimum_energy_required=energy_needed,
                 ):
-                    return
+                    if (
+                        use_refee_energy_provider
+                        and config.ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT
+                    ):
+                        logger.warning(
+                            "Energy provider acquire failed; falling back to TRX burn flow."
+                        )
+                        burn_ready, tx_trx_res = _fund_onetime_for_trc20_burn(
+                            tron_client,
+                            main_publ_key,
+                            main_priv_key,
+                            onetime_publ_key,
+                            balance,
+                            symbol,
+                            min_threshold,
+                        )
+                        if not burn_ready:
+                            return
+                        used_trx_burn_fallback = True
+                    else:
+                        return
 
             # Check available bandwidth before transfer trc20 tokens
             # from one_time to fee_deposit account
-            if not has_free_bw(
-                onetime_publ_key, config.BANDWIDTH_PER_TRC20_TRANSFER_CALL
-            ):
-                logger.warning(
-                    "One-time account has no bandwidth. Terminating transfer."
-                )
-                return
+            if not used_trx_burn_fallback:
+                if not has_free_bw(
+                    onetime_publ_key, config.BANDWIDTH_PER_TRC20_TRANSFER_CALL
+                ):
+                    logger.warning(
+                        "One-time account has no bandwidth. Terminating transfer."
+                    )
+                    return
     else:
-        logger.info(
-            "Transferring TRC20 tokens from onetime to main in TRX burning mode"
-        )
-
-        logger.info(
-            f"Transfer to main acc started for {onetime_publ_key}. Balance: "
-            f"{balance} {symbol}. Threshold is {min_threshold} {symbol}"
-        )
-
-        main_acc_balance = tron_client.get_account_balance(main_publ_key)
-
-        if main_acc_balance < config.get_internal_trc20_tx_fee():
-            logger.warning(
-                f"Main account hasn't enough currency: balance: {main_acc_balance} need: {config.get_internal_trc20_tx_fee()}.  Terminating transfer."
-            )
-            return
-
-        tx_trx = tron_client.trx.transfer(
+        burn_ready, tx_trx_res = _fund_onetime_for_trc20_burn(
+            tron_client,
             main_publ_key,
+            main_priv_key,
             onetime_publ_key,
-            int(config.get_internal_trc20_tx_fee() * 1_000_000),
+            balance,
+            symbol,
+            min_threshold,
         )
-        tx_trx._raw_data["expiration"] = current_timestamp() + 60_000
-        tx_trx = tx_trx.build()
-        tx_trx = tx_trx.sign(main_priv_key)
-        tx_trx_res = tx_trx.broadcast().wait()
-        logger.info(
-            f"Fee sent to {onetime_publ_key} with TXID {tx_trx.txid}. Details: {tx_trx_res}"
-        )
+        if not burn_ready:
+            return
 
     #
     # Same flow for both modes
@@ -341,7 +390,7 @@ def transfer_trc20_from(onetime_acc, symbol):
         f"{token_balance / 10**precision} {symbol} sent to {main_publ_key} with {tx_token.txid}. Details: {tx_token_res}"
     )
 
-    if config.ENERGY_DELEGATION_MODE:
+    if use_energy_provider:
         provider.release(onetime_publ_key)
 
     return {"tx_trx_res": tx_trx_res, "tx_token": tx_token_res}
