@@ -50,6 +50,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - 2026-04-30: Live e2e exposed bandwidth as a separate prerequisite from re:Fee energy. Commit `3b550e8` moved the onetime bandwidth precheck before energy estimation/re:Fee rental, so low-bandwidth repeat sweeps stop before creating a paid re:Fee order.
 - 2026-04-30: Production operator docs added in `README.md`: `ENERGY_SOURCE=refee`, `REFEE` JSON, activation/bandwidth behavior, burn fallback flags, Helm/container env examples, and live validation evidence.
 - 2026-04-30: Final subagent review found three energy-accounting risks after the bandwidth follow-up. Fix applied: sweep/provider checks now use available energy (`EnergyLimit - EnergyUsed`), re:Fee mode ignores delegated-resource `fromAccounts` as an energy gate, and re:Fee top-up orders are sized from the missing energy delta.
+- 2026-04-30: Follow-up post-fix review warning validated and fixed: staking mode with partial usable energy and no `fromAccounts` now delegates only the missing energy delta, covered by a RED/GREEN regression test.
 
 ## Repo state
 

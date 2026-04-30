@@ -41,6 +41,21 @@ staking provider path.
 `energy_to_provision * energy_overprovision_factor`, while still verifying
 post-rental available energy against `minimum_energy_required`.
 
+### Post-fix warning: staking no-delegated-accounts branch over-provisioned
+
+**Files changed:**
+- `app/tasks.py`
+
+The follow-up reviewer found that the legacy staking path still used full
+`energy_needed` when the onetime account had partial usable energy but no
+`fromAccounts` entry. This was validated with a RED regression test: with
+`EnergyLimit=100000`, `EnergyUsed=90000`, and `energy_needed=50000`, the provider
+received `50000` instead of the missing `40000`.
+
+The no-`fromAccounts` staking branch now provisions
+`energy_needed - onetime_energy_available`, matching the additional-delegation
+branch and avoiding unnecessary staking requirements.
+
 ## Regression Coverage
 
 **Files added:**
@@ -50,9 +65,13 @@ The regression tests cover:
 - partially used delegated energy triggers a re:Fee top-up for the missing delta;
 - existing delegated bandwidth does not block re:Fee energy rental;
 - re:Fee orders use the missing delta but verify the full required available energy.
+- staking mode with partial usable energy and no delegated accounts provisions
+  only the missing energy delta.
 
 ## Verification
 
+- RED: `/tmp/tron-shkeeper-py312-venv/bin/python -m unittest tests.test_refee_energy_accounting.RefeeEnergyAccountingTests.test_staking_acquires_missing_energy_when_no_delegated_accounts_exist` failed with `50000 != 40000`.
+- GREEN: the same targeted regression test passed after the staking branch fix.
 - `/tmp/tron-shkeeper-py312-venv/bin/python -m unittest tests.test_refee_energy_accounting` passed.
 - `/tmp/tron-shkeeper-py312-venv/bin/python -m unittest discover -s tests` passed.
 - `/tmp/tron-shkeeper-py312-venv/bin/python -m py_compile app/refee.py app/config.py app/energy_provider.py app/tasks.py app/utils.py tests/test_phase2_review_fixes.py tests/test_refee_bandwidth_guard.py tests/test_refee_energy_accounting.py` passed.

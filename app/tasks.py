@@ -340,7 +340,7 @@ def transfer_trc20_from(onetime_acc, symbol):
                         energy_to_provision = 0
                 else:
                     logger.info("No delagated energy found")
-                    energy_to_provision = energy_needed
+                    energy_to_provision = energy_needed - onetime_energy_available
 
             if energy_to_provision > 0:
                 logger.info(

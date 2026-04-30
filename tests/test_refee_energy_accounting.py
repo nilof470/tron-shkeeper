@@ -22,6 +22,15 @@ class FakeConfig:
         return Decimal("1")
 
 
+class FakeStakingConfig(FakeConfig):
+    ENERGY_SOURCE = "staking"
+    ENERGY_DELEGATION_MODE = True
+    BANDWIDTH_PER_DELEGE_CALL = 1
+    BANDWIDTH_PER_UNDELEGATE_CALL = 1
+    BANDWIDTH_PER_TRX_TRANSFER = 1
+    ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH = False
+
+
 class FakeContractFunctions:
     def decimals(self):
         return 6
@@ -93,13 +102,14 @@ class RecordingProvider:
 
 
 class RefeeEnergyAccountingTests(unittest.TestCase):
-    def patch_tasks(self, tasks, client, provider):
+    def patch_tasks(self, tasks, client, provider, config=None):
         original_config = tasks.config
         original_connection_manager = tasks.ConnectionManager
         original_get_key = tasks.get_key
+        original_get_energy_delegator = tasks.get_energy_delegator
         original_get_energy_provider = tasks.get_energy_provider
 
-        tasks.config = FakeConfig()
+        tasks.config = config or FakeConfig()
         tasks.ConnectionManager = SimpleNamespace(client=lambda: client)
 
         def fake_get_key(key_type, pub=None):
@@ -112,12 +122,14 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
             raise AssertionError(f"unexpected key type {key_type}")
 
         tasks.get_key = fake_get_key
+        tasks.get_energy_delegator = lambda: (object(), "TDELEGATOR")
         tasks.get_energy_provider = lambda tron_client=None: provider
 
         def restore():
             tasks.config = original_config
             tasks.ConnectionManager = original_connection_manager
             tasks.get_key = original_get_key
+            tasks.get_energy_delegator = original_get_energy_delegator
             tasks.get_energy_provider = original_get_energy_provider
 
         return restore
@@ -137,6 +149,33 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
             }
         )
         restore = self.patch_tasks(tasks, client, provider)
+        try:
+            result = tasks.transfer_trc20_from.run(ONETIME, "USDT")
+        finally:
+            restore()
+
+        self.assertIsNone(result)
+        self.assertEqual(len(provider.acquire_calls), 1)
+        args, kwargs = provider.acquire_calls[0]
+        self.assertEqual(args[0], ONETIME)
+        self.assertEqual(args[1], 40_000)
+        self.assertEqual(kwargs["minimum_energy_required"], 50_000)
+
+    def test_staking_acquires_missing_energy_when_no_delegated_accounts_exist(self):
+        from app import tasks
+
+        provider = RecordingProvider(acquire_result=False)
+        client = FakeTronClient(
+            {
+                "EnergyLimit": 100_000,
+                "EnergyUsed": 90_000,
+                "freeNetLimit": 600,
+                "freeNetUsed": 0,
+                "NetLimit": 0,
+                "NetUsed": 0,
+            }
+        )
+        restore = self.patch_tasks(tasks, client, provider, FakeStakingConfig())
         try:
             result = tasks.transfer_trc20_from.run(ONETIME, "USDT")
         finally:
