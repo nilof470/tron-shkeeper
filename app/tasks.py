@@ -262,6 +262,17 @@ def transfer_trc20_from(onetime_acc, symbol):
                 )
                 return
 
+        logger.info("Check onetime account bandwidth before energy provisioning")
+        if not has_free_bw(
+            onetime_publ_key,
+            config.BANDWIDTH_PER_TRC20_TRANSFER_CALL,
+            tron_client=tron_client,
+        ):
+            logger.warning(
+                "One-time account has no bandwidth. Terminating transfer before energy provisioning."
+            )
+            return
+
         logger.info("Estimate the amount of energy needed to make transfer")
         energy_needed = tron_client.get_estimated_energy(
             onetime_publ_key,

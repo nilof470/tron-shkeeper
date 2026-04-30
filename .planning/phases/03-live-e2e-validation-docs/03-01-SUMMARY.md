@@ -75,6 +75,12 @@ bandwidth was `334` and the app requires `346`. After bandwidth was delegated to
 the onetime address (`staked_bw=999`), the sweep succeeded without sending TRX
 to the onetime wallet during the successful sweep (`tx_trx_res: null`).
 
+Follow-up fix: `transfer_trc20_from` now checks onetime bandwidth before energy
+estimation and before calling the energy provider. If a customer deposits above
+threshold again while the same address has insufficient bandwidth, the sweep
+stops before creating a re:Fee order. The operator can wait for bandwidth to
+recover or delegate/rent bandwidth to that onetime address, then retry.
+
 ## Next
 
 Convert the Phase 3 runbook findings into production operator documentation:
