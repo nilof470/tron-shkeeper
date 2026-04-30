@@ -16,6 +16,10 @@ Verify the full sidecar flow on mainnet:
 - Generate the user-wallet through this sidecar so its private key is present in
   the local `keys` table.
 - Do not send TRX to the user-wallet for the clean test.
+- The user-wallet must be active and must still have enough free bandwidth for
+  the TRC20 transfer. A clean zero-TRX sweep is not immediately possible if the
+  test first activates the account and then returns the activation TRX, because
+  the return transfer consumes part of the wallet's daily bandwidth.
 - Send only a small USDT-TRC20 amount above the configured threshold, for example
   `6-10 USDT`.
 - Keep `ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT=false` so a re:Fee
@@ -85,11 +89,17 @@ Required before sweep:
 - `account_active: true`
 - `trc20_balance` greater than `min_transfer_threshold`
 - `trx_balance: "0"`
+- `has_transfer_bandwidth: true`
 - `ready_for_clean_sweep: true`
 
 If `account_active` is false, wait for the USDT deposit to finalize and check
 again. Do not run sweep while inactive, because the sidecar activation branch can
 send TRX to the user-wallet.
+
+If `account_active` is true but `has_transfer_bandwidth` is false, do not run the
+clean sweep yet. Wait for free bandwidth to recover or restart with a fresh
+active test wallet. Running re:Fee energy rental without enough bandwidth will
+delegate energy successfully but stop before broadcasting the USDT transfer.
 
 ### 5. Run the live sweep
 
@@ -126,3 +136,7 @@ The helper writes a JSON report under:
   rather than zero-TRX proof.
 - If account activation is needed, do not let the sidecar activation branch run
   for the clean zero-TRX proof.
+- If activation is required for functional testing, let the normal app flow keep
+  the activation TRX on the user-wallet until after the USDT sweep. Returning the
+  activation TRX before the sweep can consume enough bandwidth to make the TRC20
+  transfer fail its guard.

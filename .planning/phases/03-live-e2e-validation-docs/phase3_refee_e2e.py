@@ -159,6 +159,7 @@ def wallet_status(base_dir: Path, address: str, symbol: str) -> dict[str, Any]:
         from app.config import config
         from app.connection_manager import ConnectionManager
         from app.db import query_db2
+        from app.utils import has_free_bw
 
         tron_client = ConnectionManager.client()
         key_row = query_db2(
@@ -184,11 +185,18 @@ def wallet_status(base_dir: Path, address: str, symbol: str) -> dict[str, Any]:
 
         min_threshold = config.get_min_transfer_threshold(symbol)
         fee_deposit = get_fee_deposit_address()
+        transfer_bandwidth_required = config.BANDWIDTH_PER_TRC20_TRANSFER_CALL
+        has_transfer_bandwidth = account_active and has_free_bw(
+            address,
+            transfer_bandwidth_required,
+            tron_client=tron_client,
+        )
         ready_for_clean_sweep = (
             key_row is not None
             and account_active
             and token_balance > min_threshold
             and trx_balance == 0
+            and has_transfer_bandwidth
         )
 
         return {
@@ -203,9 +211,11 @@ def wallet_status(base_dir: Path, address: str, symbol: str) -> dict[str, Any]:
             "trx_balance": str(trx_balance),
             "energy_limit": resources.get("EnergyLimit", 0),
             "energy_used": resources.get("EnergyUsed", 0),
+            "transfer_bandwidth_required": transfer_bandwidth_required,
+            "has_transfer_bandwidth": has_transfer_bandwidth,
             "ready_for_clean_sweep": ready_for_clean_sweep,
             "notes": [
-                "ready_for_clean_sweep requires sidecar private key, active account, token balance above threshold, and 0 TRX.",
+                "ready_for_clean_sweep requires sidecar private key, active account, token balance above threshold, 0 TRX, and enough free bandwidth.",
                 "If account_active is false, wait for the USDT deposit confirmation before running sweep.",
             ],
         }
@@ -213,6 +223,92 @@ def wallet_status(base_dir: Path, address: str, symbol: str) -> dict[str, Any]:
 
 def check_wallet(base_dir: Path, address: str, symbol: str) -> int:
     json_print(wallet_status(base_dir, address, symbol))
+    return 0
+
+
+def prepare_clean_sweep(
+    base_dir: Path,
+    address: str,
+    symbol: str,
+    yes: bool,
+) -> int:
+    before = wallet_status(base_dir, address, symbol)
+    if not yes:
+        print("Refusing to prepare clean sweep without --yes.", file=sys.stderr)
+        return 2
+    if not before["private_key_present"]:
+        print("Refusing: sidecar does not have the onetime private key.", file=sys.stderr)
+        return 2
+    if not before["account_active"]:
+        print(
+            "Refusing: inactive accounts cannot be prepared for an immediate clean sweep. "
+            "Activation plus TRX return consumes bandwidth needed for the TRC20 transfer.",
+            file=sys.stderr,
+        )
+        return 2
+
+    return_tx = None
+    flask_app = bootstrap_app(base_dir)
+    with flask_app.app_context():
+        from tronpy.tron import current_timestamp
+
+        from app.config import config
+        from app.connection_manager import ConnectionManager
+        from app.schemas import KeyType
+        from app.utils import get_key, has_free_bw
+
+        tron_client = ConnectionManager.client()
+        main_priv_key, main_publ_key = get_key(KeyType.fee_deposit)
+        onetime_priv_key, onetime_publ_key = get_key(KeyType.onetime, pub=address)
+        if main_priv_key is None:
+            print("Refusing: fee_deposit private key is not available.", file=sys.stderr)
+            return 2
+        if onetime_priv_key is None:
+            print("Refusing: onetime private key is not available.", file=sys.stderr)
+            return 2
+        if onetime_publ_key != address:
+            print("Refusing: loaded onetime key does not match address.", file=sys.stderr)
+            return 2
+
+        onetime_trx_balance = tron_client.get_account_balance(onetime_publ_key)
+        if onetime_trx_balance > 0:
+            if not has_free_bw(
+                onetime_publ_key,
+                config.BANDWIDTH_PER_TRX_TRANSFER
+                + config.BANDWIDTH_PER_TRC20_TRANSFER_CALL,
+                tron_client=tron_client,
+            ):
+                print(
+                    "Refusing: returning TRX would leave too little free bandwidth for TRC20 sweep.",
+                    file=sys.stderr,
+                )
+                return 2
+
+            tx_return = tron_client.trx.transfer(
+                onetime_publ_key,
+                main_publ_key,
+                int(onetime_trx_balance * Decimal(1_000_000)),
+            )
+            tx_return._raw_data["expiration"] = current_timestamp() + 60_000
+            tx_return = tx_return.build()
+            tx_return = tx_return.sign(onetime_priv_key)
+            return_tx = tx_return.broadcast().wait()
+
+    after = wallet_status(base_dir, address, symbol)
+    report = {
+        "started_at": utc_stamp(),
+        "address": address,
+        "symbol": symbol,
+        "before": before,
+        "return_tx": return_tx,
+        "after": after,
+    }
+    report_path = base_dir / ("phase3-clean-sweep-prep-" + utc_stamp() + ".json")
+    report_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+    json_print({"report": str(report_path), "after": after})
     return 0
 
 
@@ -318,6 +414,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     sub.add_parser("generate-wallet")
     check = sub.add_parser("check-wallet")
     check.add_argument("--address", required=True)
+    prep = sub.add_parser("prepare-clean-sweep")
+    prep.add_argument("--address", required=True)
+    prep.add_argument("--yes", action="store_true")
     sweep = sub.add_parser("run-sweep")
     sweep.add_argument("--address", required=True)
     sweep.add_argument("--yes", action="store_true")
@@ -336,6 +435,13 @@ def main(argv: list[str]) -> int:
         return generate_wallet(args.base_dir, args.symbol)
     if args.command == "check-wallet":
         return check_wallet(args.base_dir, args.address, args.symbol)
+    if args.command == "prepare-clean-sweep":
+        return prepare_clean_sweep(
+            args.base_dir,
+            args.address,
+            args.symbol,
+            args.yes,
+        )
     if args.command == "run-sweep":
         return run_sweep(
             args.base_dir,
