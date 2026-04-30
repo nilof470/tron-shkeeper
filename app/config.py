@@ -1,11 +1,12 @@
 from decimal import Decimal
 from functools import cache
-from typing import List
+from typing import List, Literal
 
-from pydantic import Field, Json, field_validator
+from pydantic import Field, Json, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .custom.aml.schemas import ExternalDrain
+from .refee import RefeeConfig
 from .schemas import TronFullnode, TronNetwork, Token, TronSymbol, SrVote
 from .exceptions import UnknownToken
 
@@ -70,6 +71,8 @@ class Settings(BaseSettings):
     ENERGY_DELEGATION_MODE_ENERGY_DELEGATION_FACTOR: Decimal = Decimal("1.0")
     ENERGY_DELEGATION_MODE_SEPARATE_BALANCE_AND_ENERGY_ACCOUNTS: bool = False
     ENERGY_DELEGATION_MODE_ENERGY_ACCOUNT_PUB_KEY: str | None = None
+    ENERGY_SOURCE: Literal["staking", "refee"] = "staking"
+    REFEE: Json[RefeeConfig] | None = None
     # Voting
     SR_VOTING: bool = False
     SR_VOTES: Json[List[SrVote]] | None = None
@@ -164,6 +167,12 @@ class Settings(BaseSettings):
                 f"At least one workflow should be enabled for EXTERNAL_DRAIN_CONFIG: {aml_check=} {regular_split=}"
             )
         return value
+
+    @model_validator(mode="after")
+    def validate_refee_config_state(self):
+        if self.ENERGY_SOURCE == "refee" and self.REFEE is None:
+            raise ValueError("REFEE must be configured when ENERGY_SOURCE='refee'")
+        return self
 
 
 config = Settings()
