@@ -48,7 +48,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - Plan 02 code is committed in `d8a6ae3`.
 - Plan 03 smoke artifact is committed in `d3be929` and updated with post-review fix verification.
 - Review fixes are committed in `f68e27f` and `4902690`; `01-REVIEW-FIX.md` is committed in `bb98bce`.
-- Plan 03 summary is pending docs commit.
+- Plan 03 summary and approval closure are committed in `487c566`.
 
 ## Next action
 
