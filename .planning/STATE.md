@@ -4,7 +4,7 @@
 
 ## Current position
 
-Phase 1 execution in progress on `gsd-phase-1-energyprovider-abstraction`. Plan 01 is complete: `app/energy_provider.py` now contains the EnergyProvider abstraction and staking-backed implementation. Plan 02 is next.
+Phase 1 execution in progress on `gsd-phase-1-energyprovider-abstraction`. Plans 01 and 02 are complete: `app/energy_provider.py` contains the provider abstraction, and `transfer_trc20_from` now uses it for staking acquire/release. Plan 03 smoke verification is next.
 
 ## Memory across sessions
 
@@ -35,13 +35,15 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - 2026-04-30: this `.planning/` scaffolded via shortcut B.
 - 2026-04-30: `/gsd-plan-phase 1` reviewed existing Phase 1 plans and corrected the EnergyProvider `acquire` contract so staking top-ups delegate `energy_diff` while still verifying full `energy_needed`.
 - 2026-04-30: `/gsd-execute-phase 1` completed Plan 01. Commit `7da9b01` added `app/energy_provider.py`; summary written to `.planning/phases/01-energyprovider-abstraction/01-01-SUMMARY.md`.
+- 2026-04-30: `/gsd-execute-phase 1` completed Plan 02. Commit `d8a6ae3` wired `transfer_trc20_from` to `get_energy_provider()`, removed inline staking closures, and preserved staking top-up recheck semantics.
 
 ## Repo state
 
 - Branch: `gsd-phase-1-energyprovider-abstraction`.
 - Planning baseline is committed in `0df470f`.
 - Plan 01 code is committed in `7da9b01`.
+- Plan 02 code is committed in `d8a6ae3`.
 
 ## Next action
 
-Continue `/gsd-execute-phase 1` with Plan 02: wire `transfer_trc20_from` to `get_energy_provider()`.
+Continue `/gsd-execute-phase 1` with Plan 03: smoke verification and operator signoff.
