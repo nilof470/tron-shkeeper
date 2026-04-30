@@ -125,6 +125,23 @@ refee config OK SecretStr
 
 Result: PASS.
 
+### invalid REFEE numeric values
+
+Command:
+
+```bash
+env ENERGY_SOURCE=refee REFEE='{"api_key":"secret","poll_interval_sec":0}' DATABASE=/tmp/tron-shkeeper-smoke-data/database.db DB_URI=sqlite:////tmp/tron-shkeeper-smoke-data/tron.db PYTHONPYCACHEPREFIX=/tmp/tron-shkeeper-pycache /tmp/tron-shkeeper-py312-venv/bin/python -c 'from app.config import Settings; Settings()'
+```
+
+Expected failure output contains:
+
+```text
+REFEE.poll_interval_sec
+Input should be greater than 0
+```
+
+Result: PASS. Invalid polling configuration fails at startup.
+
 ## Mocked re:Fee provider happy path
 
 Temporary script: `/tmp/refee_provider_smoke.py` (not committed).
@@ -152,6 +169,24 @@ provider happy path OK
 ```
 
 Result: PASS.
+
+### completed status is not accepted pre-broadcast
+
+Temporary script: `/tmp/refee_completed_status_smoke.py` (not committed).
+
+Command:
+
+```bash
+env PYTHONPATH=. ENERGY_SOURCE=refee REFEE='{"api_key":"secret"}' DATABASE=/tmp/tron-shkeeper-smoke-data/database.db DB_URI=sqlite:////tmp/tron-shkeeper-smoke-data/tron.db PYTHONPYCACHEPREFIX=/tmp/tron-shkeeper-pycache /tmp/tron-shkeeper-py312-venv/bin/python /tmp/refee_completed_status_smoke.py
+```
+
+Output:
+
+```text
+completed status rejected OK
+```
+
+Result: PASS. `completed` is treated as unsafe for the pre-broadcast acquire path.
 
 ## Mocked failure + fallback path
 

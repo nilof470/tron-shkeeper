@@ -4,7 +4,7 @@
 
 ## Current position
 
-Phase 1 is complete on `gsd-phase-1-energyprovider-abstraction`. Plans 01-03 are complete; structural checks, Mode B local-stub smoke, post-review regression verification, and human approval are recorded. Phase 1.5 spike 003 has a committed runbook/probe in the companion repo, but live execution is pending operator API key, topped-up balance, and a test TRON address. Phase 2 is planned and ready for review/execution.
+Phase 1 is complete on `gsd-phase-1-energyprovider-abstraction`. Plans 01-03 are complete; structural checks, Mode B local-stub smoke, post-review regression verification, and human approval are recorded. Phase 1.5 spike 003 has a committed runbook/probe in the companion repo, but live execution is pending operator API key, topped-up balance, and a test TRON address. Phase 2 is implemented with structural/mocked smoke verification; live re:Fee validation remains pending.
 
 ## Memory across sessions
 
@@ -42,6 +42,8 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - 2026-04-30: Human approval recorded for Phase 1. `01-03-SUMMARY.md` created; Phase 1 is complete.
 - 2026-04-30: Companion spike 003 runbook/probe prepared in `shkeeper.io` commit `7f4aff5`; live order remains pending credentials/top-up.
 - 2026-04-30: `/gsd-plan-phase 2` completed inline: context, research, pattern map, and four executable plans under `.planning/phases/02-refee-energyprovider-dispatch/`.
+- 2026-04-30: `/gsd-execute-phase 2` completed inline through Plan 04. Commits `567a75e`, `e9e2d57`, `2a262fe`, and `0eae4c7` add config, `RefeeEnergyProvider`, sweep fallback wiring, and smoke verification.
+- 2026-04-30: Phase 2 code review fixed re:Fee acquire semantics: only `delegated` is safe before broadcast, malformed API JSON/fullnode check errors return `False`, and invalid REFEE numeric config fails at startup. Review recorded in `02-REVIEW.md`.
 
 ## Repo state
 
@@ -53,7 +55,9 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - Review fixes are committed in `f68e27f` and `4902690`; `01-REVIEW-FIX.md` is committed in `bb98bce`.
 - Plan 03 summary and approval closure are committed in `487c566`.
 - State sync after approval is committed in `13e7aae`.
+- Phase 2 planning is committed in `e97bdf0`.
+- Phase 2 code/smoke commits: `567a75e`, `e9e2d57`, `2a262fe`, `0eae4c7`.
 
 ## Next action
 
-Recommended next action: review and run `$gsd-execute-phase 2`. During Plan 04, run companion spike 003 live if the operator provides `REFEE_API_KEY`, topped-up re:Fee balance, and `REFEE_TEST_TRON_ADDRESS`; otherwise record live spike pending and keep timeout defaults provisional.
+Recommended next action: code review Phase 2, then run companion spike 003 live when the operator provides `REFEE_API_KEY`, topped-up re:Fee balance, and `REFEE_TEST_TRON_ADDRESS`. Keep `REFEE.timeout_sec=60` and `REFEE.poll_interval_sec=2.0` provisional until the live run.

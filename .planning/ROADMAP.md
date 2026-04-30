@@ -41,7 +41,7 @@
 
 ## Phase 2 — `RefeeEnergyProvider` + dispatch
 
-**Status:** Planned — 4 plans, 4 waves.
+**Status:** Implemented — structural/mocked smoke passed; live re:Fee validation pending operator credentials/top-up.
 
 **Goal:** Add the new `RefeeEnergyProvider` to `app/energy_provider.py`, wire it into the factory via the new `ENERGY_SOURCE` env var, add nested `REFEE` config to `Settings`, add the cross-field validator, and wire re:Fee fallback into `transfer_trc20_from`.
 
@@ -59,6 +59,13 @@
 - Wave 2: `02-02-PLAN.md` — `RefeeEnergyProvider` and factory dispatch.
 - Wave 3: `02-03-PLAN.md` — `transfer_trc20_from` provider-mode and fallback wiring.
 - Wave 4: `02-04-PLAN.md` — structural, mocked, and optional live smoke verification.
+
+**Execution notes:**
+- Plans 02-01 through 02-04 have summaries.
+- Default staking import/compile smoke passed.
+- Mocked re:Fee provider happy path and mocked re:Fee failure + TRX-burn fallback passed.
+- Code review hardening applied: `completed` status is rejected pre-broadcast, malformed API/fullnode failures return `False`, and non-positive REFEE timing/factor config is invalid.
+- Live `POST /api/rent_resource/orders` remains pending Phase 1.5 operator-gated run.
 
 **Done when:**
 - `ENERGY_SOURCE=staking` (default): behavior identical to Phase 1 / upstream master.

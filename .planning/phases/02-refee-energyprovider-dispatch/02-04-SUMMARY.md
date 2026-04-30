@@ -47,6 +47,7 @@ import verification evidence.
 
 - `compileall` passed for `app/refee.py`, `app/config.py`, `app/energy_provider.py`, and `app/tasks.py`.
 - Provider happy path smoke printed `provider happy path OK`.
+- Completed-status regression smoke printed `completed status rejected OK`.
 - Fallback smoke printed `fallback path OK`.
 - Import sanity printed `import sanity OK`.
 

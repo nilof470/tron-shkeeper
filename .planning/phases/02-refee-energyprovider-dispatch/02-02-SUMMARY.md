@@ -27,7 +27,7 @@ Added `RefeeEnergyProvider` behind the Phase 1 `EnergyProvider` abstraction.
 
 - Added bounded `requests.post` / `requests.get` calls with timeout `10`.
 - Added create-order payload for `rent_resource` energy orders.
-- Added polling by `response["id"]` until `status` is `delegated` or `completed`.
+- Added polling by `response["id"]` until `status` is `delegated`.
 - Added terminal failure handling for `failed`, `insufficient_funds`, and `canceled`.
 - Added on-chain `EnergyLimit >= energy_required` verification through the selected `tron_client`.
 - Updated `get_energy_provider(tron_client=...)` to dispatch to re:Fee when `config.ENERGY_SOURCE == "refee"`.

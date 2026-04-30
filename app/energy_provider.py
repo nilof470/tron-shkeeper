@@ -162,8 +162,8 @@ class StakingEnergyProvider(EnergyProvider):
 
 class RefeeEnergyProvider(EnergyProvider):
     REQUEST_TIMEOUT_SEC = 10
-    SUCCESS_STATUSES = {"delegated", "completed"}
-    FAILURE_STATUSES = {"failed", "insufficient_funds", "canceled"}
+    SUCCESS_STATUSES = {"delegated"}
+    FAILURE_STATUSES = {"failed", "insufficient_funds", "canceled", "completed"}
 
     def __init__(self, tron_client=None):
         self.tron_client = tron_client
@@ -210,7 +210,11 @@ class RefeeEnergyProvider(EnergyProvider):
             return False
 
         tron_client = self.tron_client or ConnectionManager.client()
-        onetime_address_resources = tron_client.get_account_resource(receiver)
+        try:
+            onetime_address_resources = tron_client.get_account_resource(receiver)
+        except Exception:
+            logger.exception("re:Fee on-chain resource check failed")
+            return False
         onetime_energy_available = onetime_address_resources.get("EnergyLimit", 0)
         logger.info(
             f"re:Fee on-chain check: {receiver=} "
@@ -263,6 +267,9 @@ class RefeeEnergyProvider(EnergyProvider):
         except ValueError:
             logger.exception("re:Fee create order response is not valid JSON")
             return None
+        if not isinstance(data, dict):
+            logger.warning(f"re:Fee create order response is not an object: {data}")
+            return None
 
         logger.info(f"re:Fee order accepted: {data}")
         return data
@@ -280,7 +287,7 @@ class RefeeEnergyProvider(EnergyProvider):
                 logger.info(f"re:Fee order {order_id} status: {status}")
                 last_status = status
 
-            if status == "delegated" or status == "completed":
+            if status == "delegated":
                 return order
             if status in self.FAILURE_STATUSES:
                 logger.warning(f"re:Fee order {order_id} failed: {order}")
@@ -309,6 +316,11 @@ class RefeeEnergyProvider(EnergyProvider):
                 order = response.json()
             except ValueError:
                 logger.exception(f"re:Fee poll response is not valid JSON: {order_id}")
+                return None
+            if not isinstance(order, dict):
+                logger.warning(
+                    f"re:Fee poll response is not an object for order {order_id}: {order}"
+                )
                 return None
 
         logger.warning(
