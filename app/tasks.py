@@ -4,8 +4,6 @@ from contextlib import closing
 import datetime
 import decimal
 from functools import cache, lru_cache
-import json
-import math
 import sqlite3
 import time
 from decimal import Decimal
