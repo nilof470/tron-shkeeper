@@ -41,7 +41,7 @@
 
 ## Phase 2 — `RefeeEnergyProvider` + dispatch
 
-**Status:** Implemented — structural/mocked smoke passed; live re:Fee validation pending operator credentials/top-up.
+**Status:** Implemented and code-reviewed — structural/mocked smoke passed; live re:Fee validation pending operator credentials/top-up.
 
 **Goal:** Add the new `RefeeEnergyProvider` to `app/energy_provider.py`, wire it into the factory via the new `ENERGY_SOURCE` env var, add nested `REFEE` config to `Settings`, add the cross-field validator, and wire re:Fee fallback into `transfer_trc20_from`.
 

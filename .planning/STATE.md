@@ -4,7 +4,7 @@
 
 ## Current position
 
-Phase 1 is complete on `gsd-phase-1-energyprovider-abstraction`. Plans 01-03 are complete; structural checks, Mode B local-stub smoke, post-review regression verification, and human approval are recorded. Phase 1.5 spike 003 has a committed runbook/probe in the companion repo, but live execution is pending operator API key, topped-up balance, and a test TRON address. Phase 2 is implemented with structural/mocked smoke verification; live re:Fee validation remains pending.
+Phase 1 is complete on `gsd-phase-1-energyprovider-abstraction`. Plans 01-03 are complete; structural checks, Mode B local-stub smoke, post-review regression verification, and human approval are recorded. Phase 1.5 spike 003 has a committed runbook/probe in the companion repo, but live execution is pending operator API key, topped-up balance, and a test TRON address. Phase 2 is implemented, code-reviewed, hardened, and structurally verified with mocked re:Fee smokes; live re:Fee validation remains pending.
 
 ## Memory across sessions
 
@@ -44,6 +44,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - 2026-04-30: `/gsd-plan-phase 2` completed inline: context, research, pattern map, and four executable plans under `.planning/phases/02-refee-energyprovider-dispatch/`.
 - 2026-04-30: `/gsd-execute-phase 2` completed inline through Plan 04. Commits `567a75e`, `e9e2d57`, `2a262fe`, and `0eae4c7` add config, `RefeeEnergyProvider`, sweep fallback wiring, and smoke verification.
 - 2026-04-30: Phase 2 code review fixed re:Fee acquire semantics: only `delegated` is safe before broadcast, malformed API JSON/fullnode check errors return `False`, and invalid REFEE numeric config fails at startup. Review recorded in `02-REVIEW.md`.
+- 2026-04-30: Post-review verification reran compile/import/config smokes plus mocked re:Fee happy path, `completed` rejection, and burn-fallback path. Main repo worktree is clean after commit `66cc4bb`.
 
 ## Repo state
 
@@ -60,4 +61,4 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 
 ## Next action
 
-Recommended next action: code review Phase 2, then run companion spike 003 live when the operator provides `REFEE_API_KEY`, topped-up re:Fee balance, and `REFEE_TEST_TRON_ADDRESS`. Keep `REFEE.timeout_sec=60` and `REFEE.poll_interval_sec=2.0` provisional until the live run.
+Recommended next action: run companion spike 003 live when the operator provides `REFEE_API_KEY`, topped-up re:Fee balance, and `REFEE_TEST_TRON_ADDRESS`. Keep `REFEE.timeout_sec=60` and `REFEE.poll_interval_sec=2.0` provisional until the live run. Phase 3 live e2e validation should wait for that same operator-gated setup.
