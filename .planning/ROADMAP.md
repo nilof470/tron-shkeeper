@@ -5,6 +5,8 @@
 
 ## Phase 1 — `EnergyProvider` abstraction with `StakingEnergyProvider`
 
+**Status:** Complete — approved 2026-04-30.
+
 **Goal:** Extract existing freeze-v2 / delegate-v2 logic from inline functions inside `transfer_trc20_from` into a clean `EnergyProvider` abstraction with a single concrete implementation (`StakingEnergyProvider`). No behavior change. This is a pure refactor that prepares for Phase 2.
 
 **Covers:** REQ-004, REQ-005 (partial), REQ-006

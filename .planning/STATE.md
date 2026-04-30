@@ -4,7 +4,7 @@
 
 ## Current position
 
-Phase 1 execution is paused at the Plan 03 human-verification gate on `gsd-phase-1-energyprovider-abstraction`. Plans 01 and 02 are complete; Plan 03 structural checks and Mode B local-stub smoke passed. Review findings from `01-REVIEW.md` have been fixed and documented in `01-REVIEW-FIX.md`. Human approval is required before marking Phase 1 complete.
+Phase 1 is complete on `gsd-phase-1-energyprovider-abstraction`. Plans 01-03 are complete; structural checks, Mode B local-stub smoke, post-review regression verification, and human approval are recorded. Next step is Phase 1.5 live re:Fee order lifecycle spike or Phase 2 planning, depending on whether the live API unknowns need to be closed first.
 
 ## Memory across sessions
 
@@ -38,6 +38,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - 2026-04-30: `/gsd-execute-phase 1` completed Plan 02. Commit `d8a6ae3` wired `transfer_trc20_from` to `get_energy_provider()`, removed inline staking closures, and preserved staking top-up recheck semantics.
 - 2026-04-30: Plan 03 structural verification and Mode B local-stub smoke were recorded in `.planning/phases/01-energyprovider-abstraction/01-03-SMOKE.md`. Status is pending human approval.
 - 2026-04-30: Code review findings fixed. Commit `f68e27f` makes `StakingEnergyProvider` reuse the sweep-selected TRON client; commit `4902690` removes stale `json`/`math` imports from `app/tasks.py`. Regression smoke confirmed `ConnectionManager.client()` is called once during the sweep.
+- 2026-04-30: Human approval recorded for Phase 1. `01-03-SUMMARY.md` created; Phase 1 is complete.
 
 ## Repo state
 
@@ -46,8 +47,9 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - Plan 01 code is committed in `7da9b01`.
 - Plan 02 code is committed in `d8a6ae3`.
 - Plan 03 smoke artifact is committed in `d3be929` and updated with post-review fix verification.
-- Review fixes are committed in `f68e27f` and `4902690`; `01-REVIEW-FIX.md` is pending docs commit.
+- Review fixes are committed in `f68e27f` and `4902690`; `01-REVIEW-FIX.md` is committed in `bb98bce`.
+- Plan 03 summary is pending docs commit.
 
 ## Next action
 
-Review `.planning/phases/01-energyprovider-abstraction/01-03-SMOKE.md` and `.planning/phases/01-energyprovider-abstraction/01-REVIEW-FIX.md`. If acceptable, add `Verdict: APPROVED` under Human verification and say `approved` in chat to resume completion.
+Recommended next action: run Phase 1.5 spike 003 in the companion `shkeeper.io` repo to close live re:Fee API unknowns before `/gsd-plan-phase 2`. If skipping the spike, proceed to `/gsd-plan-phase 2` with the current assumptions in `Open questions`.
