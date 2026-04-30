@@ -234,19 +234,46 @@ Result: PASS.
 
 ## Live spike 003 status
 
-LIVE SPIKE PENDING - no operator `REFEE_API_KEY`, topped-up re:Fee balance, and
-`REFEE_TEST_TRON_ADDRESS` were available in this session.
+LIVE SPIKE VALIDATED - an operator-provided test API key, topped-up re:Fee
+balance, and test TRON address were used to create a real `rent_resource` order.
 
-Companion runbook/probe exists at:
+Companion runbook/probe:
 
 ```text
 /Users/test/PycharmProjects/shkeeper.io/.planning/spikes/003-refee-rent-order-lifecycle/refee_rent_lifecycle.py
 ```
 
-Until that probe is run live, keep `REFEE.timeout_sec=60` and
-`REFEE.poll_interval_sec=2.0` provisional.
+Report path for the live run:
+
+```text
+/tmp/refee-rent-lifecycle-live.json
+```
+
+Observed result:
+
+- profile endpoint: HTTP 200;
+- tariffs endpoint: HTTP 200;
+- test balance before order: `30,000,000` sun;
+- selected tariff: `duration_label=1h`, `amount=65000`, estimated cost
+  `4,034,550` sun on the test key;
+- create order endpoint: HTTP 202 with initial `status=pending`;
+- poll sequence: `pending -> delegated`;
+- delegation latency: `4.933s`;
+- chain verification: available energy changed from `0` to `64999`;
+- rate-limit headers observed: none.
+
+Keep `REFEE.timeout_sec=60` and `REFEE.poll_interval_sec=2.0`: the observed
+delegation was under 5 seconds, but the defaults preserve margin for network and
+node variance.
+
+Probe note: the stdlib probe needed a browser-like `User-Agent` because
+Cloudflare returned `403 Error 1010 browser_signature_banned` for Python urllib's
+default signature. The sidecar's production `requests` client was checked against
+`/api/users/me` with the same key and returned HTTP 200.
 
 ## Result
 
 Phase 2 structural, config, provider, fallback, and import smoke checks passed.
-Live re:Fee latency/rate-limit/refund behavior remains pending companion spike 003.
+Live re:Fee order lifecycle and on-chain energy arrival passed. Refund/error-body
+behavior for failed or insufficient-funds orders remains untested because this
+funded test order succeeded.

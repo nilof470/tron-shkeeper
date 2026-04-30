@@ -24,7 +24,7 @@
 
 ## Phase 1.5 — Spike 003 (re:Fee live order lifecycle)
 
-**Status:** Runbook prepared — live execution pending operator API key, topped-up balance, and test TRON address.
+**Status:** Validated — live test order reached `delegated` on 2026-04-30.
 
 **Goal:** Run live `POST /api/rent_resource/orders` + polling to confirm: (a) status field naming in JSON, (b) realistic latency for `pending → delegated`, (c) refund behavior on `failed` / `insufficient_funds`, (d) error body shape, (e) any rate-limit headers.
 
@@ -32,8 +32,9 @@
 
 **Deliverables:**
 - Spike 003 README and stdlib probe in companion `shkeeper.io` repo at `.planning/spikes/003-refee-rent-order-lifecycle/`.
-- Concrete defaults for `REFEE.poll_interval_sec` and `REFEE.timeout_sec` based on observed latency.
-- Verified status field name and value casing for `RefeeEnergyProvider`.
+- Concrete defaults for `REFEE.poll_interval_sec` and `REFEE.timeout_sec` based on observed latency: keep `2.0s` polling and `60s` timeout after live delegation at `4.933s`.
+- Verified status field name and value casing for `RefeeEnergyProvider`: `status`, lowercase `pending -> delegated`.
+- Verified on-chain energy arrival: available energy changed from `0` to `64999`.
 
 **Risk:** Requires user to top up re:Fee balance (~3 TRX) and run a curl bundle.
 
@@ -41,7 +42,7 @@
 
 ## Phase 2 — `RefeeEnergyProvider` + dispatch
 
-**Status:** Implemented and code-reviewed — structural/mocked smoke passed; live re:Fee validation pending operator credentials/top-up.
+**Status:** Implemented and code-reviewed — structural/mocked smoke passed; live re:Fee order lifecycle validated; full sweep remains Phase 3.
 
 **Goal:** Add the new `RefeeEnergyProvider` to `app/energy_provider.py`, wire it into the factory via the new `ENERGY_SOURCE` env var, add nested `REFEE` config to `Settings`, add the cross-field validator, and wire re:Fee fallback into `transfer_trc20_from`.
 
@@ -65,7 +66,8 @@
 - Default staking import/compile smoke passed.
 - Mocked re:Fee provider happy path and mocked re:Fee failure + TRX-burn fallback passed.
 - Code review hardening applied: `completed` status is rejected pre-broadcast, malformed API/fullnode failures return `False`, and non-positive REFEE timing/factor config is invalid.
-- Live `POST /api/rent_resource/orders` remains pending Phase 1.5 operator-gated run.
+- Review fix pass applied: selected-client bandwidth checks, empty API key validation, and `SUCCESS_STATUSES` usage.
+- Live `POST /api/rent_resource/orders` validated in Phase 1.5: HTTP 202, `pending -> delegated`, 4.933s delegation latency, on-chain energy visible.
 
 **Done when:**
 - `ENERGY_SOURCE=staking` (default): behavior identical to Phase 1 / upstream master.

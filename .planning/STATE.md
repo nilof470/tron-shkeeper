@@ -4,11 +4,11 @@
 
 ## Current position
 
-Phase 1 is complete on `gsd-phase-1-energyprovider-abstraction`. Plans 01-03 are complete; structural checks, Mode B local-stub smoke, post-review regression verification, and human approval are recorded. Phase 1.5 spike 003 has a committed runbook/probe in the companion repo, but live execution is pending operator API key, topped-up balance, and a test TRON address. Phase 2 is implemented, code-reviewed, hardened, and structurally verified with mocked re:Fee smokes; live re:Fee validation remains pending.
+Phase 1 is complete on `gsd-phase-1-energyprovider-abstraction`. Plans 01-03 are complete; structural checks, Mode B local-stub smoke, post-review regression verification, and human approval are recorded. Phase 1.5 spike 003 is live-validated in the companion repo: a test re:Fee `rent_resource` order reached `delegated` and on-chain energy was confirmed. Phase 2 is implemented, code-reviewed, hardened, and structurally verified with mocked re:Fee smokes plus live order lifecycle validation. Full live USDT sweep remains Phase 3.
 
 ## Memory across sessions
 
-This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Architectural decisions and economics are in the **companion** project at `/Users/test/PycharmProjects/shkeeper.io/.planning/spikes/` (spikes 001 and 002 done; 003 and 004 pending). Don't re-derive what's in those spikes — read them.
+This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Architectural decisions and economics are in the **companion** project at `/Users/test/PycharmProjects/shkeeper.io/.planning/spikes/` (spikes 001, 002, and 003 done; 004 pending). Don't re-derive what's in those spikes — read them.
 
 ## Active decisions
 
@@ -18,17 +18,15 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - Config surface: `ENERGY_SOURCE: Literal["staking","refee"] = "staking"` plus nested `REFEE: Json[RefeeConfig] | None`.
 - Default `REFEE.rent_duration_label=1h` per spike 001 economics (cheapest tier for our usage profile).
 - Default `REFEE.energy_overprovision_factor=1.05` (5% safety margin over chain-estimated energy).
-- Default `REFEE.timeout_sec=60` and `REFEE.poll_interval_sec=2.0` (placeholder until spike 003 measures real latency).
+- Default `REFEE.timeout_sec=60` and `REFEE.poll_interval_sec=2.0` remain conservative after spike 003 measured live delegation at 4.933s.
 - Idempotency: rely on existing `EnergyLimit ≥ energy_needed` check at `app/tasks.py:297-303`. No external_id, no new state.
 - Repo: `nilof470/tron-shkeeper` fork. Upstream `vsys-host/tron-shkeeper` push is disabled locally. Personal fork — no upstream PR.
 
-## Open questions (deferred to spike 003)
+## Open questions
 
-- Live confirmation that the OpenAPI `status` field and lowercase values match production responses.
-- Realistic latency for `pending → delegated` (defaults assume up to 60s; tighten or loosen after measurement).
 - Refund behavior on `failed`/`insufficient_funds` — does balance return to user account?
 - Error body shape (assume free-form text; tighten if structured).
-- Rate limit headers (assume polling at 2s is fine; back off if 429 observed).
+- Phase 3 full sweep proof: `ENERGY_SOURCE=refee` with a user-wallet holding USDT and zero TRX.
 
 ## Recent work
 
@@ -40,11 +38,13 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - 2026-04-30: Plan 03 structural verification and Mode B local-stub smoke were recorded in `.planning/phases/01-energyprovider-abstraction/01-03-SMOKE.md`. Status is pending human approval.
 - 2026-04-30: Code review findings fixed. Commit `f68e27f` makes `StakingEnergyProvider` reuse the sweep-selected TRON client; commit `4902690` removes stale `json`/`math` imports from `app/tasks.py`. Regression smoke confirmed `ConnectionManager.client()` is called once during the sweep.
 - 2026-04-30: Human approval recorded for Phase 1. `01-03-SUMMARY.md` created; Phase 1 is complete.
-- 2026-04-30: Companion spike 003 runbook/probe prepared in `shkeeper.io` commit `7f4aff5`; live order remains pending credentials/top-up.
+- 2026-04-30: Companion spike 003 runbook/probe prepared in `shkeeper.io` commit `7f4aff5`; live order validation was completed later with operator test credentials/top-up.
 - 2026-04-30: `/gsd-plan-phase 2` completed inline: context, research, pattern map, and four executable plans under `.planning/phases/02-refee-energyprovider-dispatch/`.
 - 2026-04-30: `/gsd-execute-phase 2` completed inline through Plan 04. Commits `567a75e`, `e9e2d57`, `2a262fe`, and `0eae4c7` add config, `RefeeEnergyProvider`, sweep fallback wiring, and smoke verification.
 - 2026-04-30: Phase 2 code review fixed re:Fee acquire semantics: only `delegated` is safe before broadcast, malformed API JSON/fullnode check errors return `False`, and invalid REFEE numeric config fails at startup. Review recorded in `02-REVIEW.md`.
 - 2026-04-30: Post-review verification reran compile/import/config smokes plus mocked re:Fee happy path, `completed` rejection, and burn-fallback path. Main repo worktree is clean after commit `66cc4bb`.
+- 2026-04-30: Phase 2 deep review findings fixed in commits `b83d004` and `0432641`: selected-client bandwidth checks, empty API key validation, and `SUCCESS_STATUSES` usage.
+- 2026-04-30: Companion spike 003 live run succeeded with test API key and topped-up re:Fee balance: `pending -> delegated`, delegation latency `4.933s`, on-chain energy available `0 -> 64999`, no rate-limit headers observed. Probe needed browser-like User-Agent for urllib; production `requests` profile check returned HTTP 200.
 
 ## Repo state
 
@@ -57,8 +57,8 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - Plan 03 summary and approval closure are committed in `487c566`.
 - State sync after approval is committed in `13e7aae`.
 - Phase 2 planning is committed in `e97bdf0`.
-- Phase 2 code/smoke commits: `567a75e`, `e9e2d57`, `2a262fe`, `0eae4c7`.
+- Phase 2 code/smoke/review-fix commits: `567a75e`, `e9e2d57`, `2a262fe`, `0eae4c7`, `66cc4bb`, `655ec4b`, `b83d004`, `0432641`.
 
 ## Next action
 
-Recommended next action: run companion spike 003 live when the operator provides `REFEE_API_KEY`, topped-up re:Fee balance, and `REFEE_TEST_TRON_ADDRESS`. Keep `REFEE.timeout_sec=60` and `REFEE.poll_interval_sec=2.0` provisional until the live run. Phase 3 live e2e validation should wait for that same operator-gated setup.
+Recommended next action: Phase 3 live e2e validation with a controlled user-wallet that has a small USDT-TRC20 balance and zero TRX. Use the validated re:Fee key/balance path, record tx hashes/logs, and then write operator docs.
