@@ -128,7 +128,7 @@ def transfer_trc20_from(onetime_acc, symbol):
 
     if config.ENERGY_DELEGATION_MODE:
         # Bind once for both acquire (delegation) and release (post-transfer undelegate) calls.
-        provider = get_energy_provider()
+        provider = get_energy_provider(tron_client=tron_client)
 
         logger.info(
             f"Initiating TRC20 tokens transfer from ONETIME={onetime_publ_key} to MAIN={main_publ_key} in ENERGY DELEGATION MODE"

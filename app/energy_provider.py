@@ -56,6 +56,9 @@ class EnergyProvider(ABC):
 
 
 class StakingEnergyProvider(EnergyProvider):
+    def __init__(self, tron_client=None):
+        self.tron_client = tron_client
+
     def acquire(
         self,
         receiver: str,
@@ -64,7 +67,7 @@ class StakingEnergyProvider(EnergyProvider):
         *,
         minimum_energy_required: int | None = None,
     ) -> bool:
-        tron_client = ConnectionManager.client()
+        tron_client = self.tron_client or ConnectionManager.client()
         energy_delegator_priv, energy_delegator_pub = get_energy_delegator()
         energy_needed = (
             energy_to_provision
@@ -153,5 +156,5 @@ class StakingEnergyProvider(EnergyProvider):
         return int(trx * 1_000_000)
 
 
-def get_energy_provider() -> EnergyProvider:
-    return StakingEnergyProvider()
+def get_energy_provider(tron_client=None) -> EnergyProvider:
+    return StakingEnergyProvider(tron_client=tron_client)
