@@ -4,7 +4,7 @@
 
 ## Current position
 
-Phase 1 execution in progress on `gsd-phase-1-energyprovider-abstraction`. Plans 01 and 02 are complete: `app/energy_provider.py` contains the provider abstraction, and `transfer_trc20_from` now uses it for staking acquire/release. Plan 03 smoke verification is next.
+Phase 1 execution is paused at the Plan 03 human-verification gate on `gsd-phase-1-energyprovider-abstraction`. Plans 01 and 02 are complete; Plan 03 structural checks and Mode B local-stub smoke passed. Human approval is required before marking Phase 1 complete.
 
 ## Memory across sessions
 
@@ -36,6 +36,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - 2026-04-30: `/gsd-plan-phase 1` reviewed existing Phase 1 plans and corrected the EnergyProvider `acquire` contract so staking top-ups delegate `energy_diff` while still verifying full `energy_needed`.
 - 2026-04-30: `/gsd-execute-phase 1` completed Plan 01. Commit `7da9b01` added `app/energy_provider.py`; summary written to `.planning/phases/01-energyprovider-abstraction/01-01-SUMMARY.md`.
 - 2026-04-30: `/gsd-execute-phase 1` completed Plan 02. Commit `d8a6ae3` wired `transfer_trc20_from` to `get_energy_provider()`, removed inline staking closures, and preserved staking top-up recheck semantics.
+- 2026-04-30: Plan 03 structural verification and Mode B local-stub smoke were recorded in `.planning/phases/01-energyprovider-abstraction/01-03-SMOKE.md`. Status is pending human approval.
 
 ## Repo state
 
@@ -43,7 +44,8 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - Planning baseline is committed in `0df470f`.
 - Plan 01 code is committed in `7da9b01`.
 - Plan 02 code is committed in `d8a6ae3`.
+- Plan 03 smoke artifact is pending checkpoint commit.
 
 ## Next action
 
-Continue `/gsd-execute-phase 1` with Plan 03: smoke verification and operator signoff.
+Review `.planning/phases/01-energyprovider-abstraction/01-03-SMOKE.md`. If acceptable, add `Verdict: APPROVED` under Human verification and say `approved` in chat to resume completion.
