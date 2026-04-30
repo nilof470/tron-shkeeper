@@ -24,13 +24,15 @@
 
 ## Phase 1.5 — Spike 003 (re:Fee live order lifecycle)
 
+**Status:** Runbook prepared — live execution pending operator API key, topped-up balance, and test TRON address.
+
 **Goal:** Run live `POST /api/rent_resource/orders` + polling to confirm: (a) status field naming in JSON, (b) realistic latency for `pending → delegated`, (c) refund behavior on `failed` / `insufficient_funds`, (d) error body shape, (e) any rate-limit headers.
 
 **Covers:** open questions in `.planning/spikes/002-tron-shkeeper-sidecar-recon/README.md` "Open Questions" section.
 
 **Deliverables:**
-- Spike 003 README in companion `shkeeper.io` repo at `.planning/spikes/003-refee-rent-order-lifecycle/`.
-- Concrete defaults for `REFEE_RENT_POLL_INTERVAL_SEC` and `REFEE_RENT_TIMEOUT_SEC` based on observed latency.
+- Spike 003 README and stdlib probe in companion `shkeeper.io` repo at `.planning/spikes/003-refee-rent-order-lifecycle/`.
+- Concrete defaults for `REFEE.poll_interval_sec` and `REFEE.timeout_sec` based on observed latency.
 - Verified status field name and value casing for `RefeeEnergyProvider`.
 
 **Risk:** Requires user to top up re:Fee balance (~3 TRX) and run a curl bundle.
@@ -39,21 +41,29 @@
 
 ## Phase 2 — `RefeeEnergyProvider` + dispatch
 
-**Goal:** Add the new `RefeeEnergyProvider` to `app/energy_provider.py`, wire it into the factory via the new `ENERGY_SOURCE` env var, add the seven re:Fee env vars to `Settings`, add the cross-field validator.
+**Status:** Planned — 4 plans, 4 waves.
 
-**Covers:** REQ-001, REQ-002, REQ-003, REQ-005 (full), REQ-007, REQ-008, REQ-009, REQ-010, REQ-011, REQ-012, REQ-013
+**Goal:** Add the new `RefeeEnergyProvider` to `app/energy_provider.py`, wire it into the factory via the new `ENERGY_SOURCE` env var, add nested `REFEE` config to `Settings`, add the cross-field validator, and wire re:Fee fallback into `transfer_trc20_from`.
+
+**Covers:** REQ-001, REQ-002, REQ-003, REQ-005 (full), REQ-007, REQ-008, REQ-009, REQ-010, REQ-011, REQ-012, REQ-013, REQ-014, REQ-015, REQ-016, REQ-101, REQ-102, REQ-103
 
 **Deliverables:**
 - `RefeeEnergyProvider` class with `acquire()` (POST + poll + on-chain verify) and `release()` (no-op).
-- `Settings.ENERGY_SOURCE` and 6 new `REFEE_*` fields with defaults.
-- `model_validator(mode='after')` enforcing `REFEE_API_KEY` is set when `ENERGY_SOURCE=refee`.
+- `Settings.ENERGY_SOURCE` and nested `REFEE: Json[RefeeConfig] | None` config with defaults.
+- `model_validator(mode='after')` enforcing `REFEE` is set when `ENERGY_SOURCE=refee`.
 - Logger calls at every lifecycle decision point (REQ-101).
 - Fallback path in `transfer_trc20_from` when `acquire` returns False, gated by `ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT` (REQ-007).
+
+**Plan breakdown:**
+- Wave 1: `02-01-PLAN.md` — config surface (`app/refee.py`, `app/config.py`).
+- Wave 2: `02-02-PLAN.md` — `RefeeEnergyProvider` and factory dispatch.
+- Wave 3: `02-03-PLAN.md` — `transfer_trc20_from` provider-mode and fallback wiring.
+- Wave 4: `02-04-PLAN.md` — structural, mocked, and optional live smoke verification.
 
 **Done when:**
 - `ENERGY_SOURCE=staking` (default): behavior identical to Phase 1 / upstream master.
 - `ENERGY_SOURCE=refee` + valid API key + topped-up balance + a user-wallet with USDT and zero TRX: `transfer_trc20_from` sequence runs through `RefeeEnergyProvider.acquire`, gets back True after on-chain verify, broadcasts the USDT-TRC20 transfer, returns success.
-- `ENERGY_SOURCE=refee` without `REFEE_API_KEY`: pydantic raises a clear validation error at process startup.
+- `ENERGY_SOURCE=refee` without `REFEE`: pydantic raises a clear validation error at process startup.
 - Re:Fee failure (mocked or real) + `ALLOW_BURN_TRX_ON_PAYOUT=true`: falls back to TRX-burn path without raising.
 
 **Risk:** Medium. Live API integration. Spike 003 closes the unknowns.
