@@ -56,6 +56,7 @@ Optional `REFEE` fields:
   "api_key": "YOUR_REFEE_API_KEY",
   "rent_duration_label": "1h",
   "energy_overprovision_factor": "1.05",
+  "min_energy_order_amount": 30000,
   "poll_interval_sec": 2.0,
   "timeout_sec": 60
 }
@@ -64,6 +65,11 @@ Optional `REFEE` fields:
 Allowed `rent_duration_label` values are `1h`, `1d`, `3d`, `7d`, and `14d`.
 `api_key` is required and must be non-empty. When `ENERGY_SOURCE=refee`,
 startup fails if `REFEE` is missing.
+
+`min_energy_order_amount` defaults to `30000`, matching the live re:Fee energy
+order minimum observed from the API. The sidecar still estimates the missing
+energy for each sweep, applies `energy_overprovision_factor`, and then uses this
+minimum as a floor for small top-up orders.
 
 ## Sweep Prerequisites
 

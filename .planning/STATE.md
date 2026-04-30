@@ -18,6 +18,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - Config surface: `ENERGY_SOURCE: Literal["staking","refee"] = "staking"` plus nested `REFEE: Json[RefeeConfig] | None`.
 - Default `REFEE.rent_duration_label=1h` per spike 001 economics (cheapest tier for our usage profile).
 - Default `REFEE.energy_overprovision_factor=1.05` (5% safety margin over chain-estimated energy).
+- Default `REFEE.min_energy_order_amount=30000`, matching the live re:Fee `resource=energy` order minimum observed from the API.
 - Default `REFEE.timeout_sec=60` and `REFEE.poll_interval_sec=2.0` remain conservative after spike 003 measured live delegation at 4.933s.
 - Idempotency: rely on existing `EnergyLimit ≥ energy_needed` check at `app/tasks.py:297-303`. No external_id, no new state.
 - Repo: `nilof470/tron-shkeeper` fork. Upstream `vsys-host/tron-shkeeper` push is disabled locally. Personal fork — no upstream PR.
@@ -51,6 +52,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - 2026-04-30: Production operator docs added in `README.md`: `ENERGY_SOURCE=refee`, `REFEE` JSON, activation/bandwidth behavior, burn fallback flags, Helm/container env examples, and live validation evidence.
 - 2026-04-30: Final subagent review found three energy-accounting risks after the bandwidth follow-up. Fix applied: sweep/provider checks now use available energy (`EnergyLimit - EnergyUsed`), re:Fee mode ignores delegated-resource `fromAccounts` as an energy gate, and re:Fee top-up orders are sized from the missing energy delta.
 - 2026-04-30: Follow-up post-fix review warning validated and fixed: staking mode with partial usable energy and no `fromAccounts` now delegates only the missing energy delta, covered by a RED/GREEN regression test.
+- 2026-04-30: Live re:Fee API probe confirmed `resource=energy` order quantity must be `30000..5000000`; code now floors small re:Fee top-up orders at `REFEE.min_energy_order_amount=30000`.
 
 ## Repo state
 

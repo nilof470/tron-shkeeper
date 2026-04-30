@@ -186,11 +186,12 @@ class RefeeEnergyProvider(EnergyProvider):
             if minimum_energy_required is None
             else minimum_energy_required
         )
-        amount = int(
+        requested_amount = int(
             (
                 Decimal(energy_to_provision) * settings.energy_overprovision_factor
             ).to_integral_value(rounding=ROUND_CEILING)
         )
+        amount = max(requested_amount, settings.min_energy_order_amount)
         logger.info(
             f"Requesting re:Fee energy rental for {receiver}: "
             f"{amount} energy for {settings.rent_duration_label}"
