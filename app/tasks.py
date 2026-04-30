@@ -35,6 +35,7 @@ from .utils import (
     skip_if_running,
 )
 from .connection_manager import ConnectionManager
+from .energy_provider import get_energy_provider
 from .logging import logger
 from .wallet_encryption import wallet_encryption
 
@@ -112,77 +113,6 @@ def transfer_trc20_from(onetime_acc, symbol):
 
     tx_trx_res = None
 
-    def calc_sun_for_energy_delegation(energy, res):
-        trx: int = math.ceil(
-            (res["TotalEnergyWeight"] * energy) / res["TotalEnergyLimit"]
-        )
-        trx *= config.ENERGY_DELEGATION_MODE_ENERGY_DELEGATION_FACTOR
-        return int(trx * 1_000_000)
-
-    def delegate_energy(sun_to_delegate):
-        logger.info("Check if energy delegator account can delegate energy")
-        result = tron_client.provider.make_request(
-            "wallet/getcandelegatedmaxsize",
-            {"owner_address": energy_delegator_pub, "type": 1, "visible": True},
-        )
-        if "max_size" not in result:
-            logger.warning(
-                "Energy delegator has no delegatable energy. Terminating transfer."
-            )
-            return False
-
-        else:
-            delegetable_sun = result["max_size"]
-
-            logger.info(f"{delegetable_sun=} {sun_to_delegate=}")
-
-            if delegetable_sun < sun_to_delegate:
-                logger.warning(
-                    "Energy delegator has not enough energy. Terminating transfer."
-                )
-                return False
-            else:
-                logger.info("Energy delegator has enough energy")
-
-                logger.info("Delegating energy to onetime account")
-
-                unsigned_tx = tron_client.trx.delegate_resource(
-                    owner=energy_delegator_pub,
-                    receiver=onetime_publ_key,
-                    balance=sun_to_delegate,
-                    resource="ENERGY",
-                ).build()
-                signed_tx = unsigned_tx.sign(energy_delegator_priv)
-                logger.info(f"TX json size: {len(json.dumps(signed_tx._raw_data))}")
-
-                delegate_tx_info = signed_tx.broadcast().wait()
-
-                logger.info(
-                    f"Delegated {energy_needed} energy to onetime account {onetime_publ_key} with TXID: {unsigned_tx.txid}"
-                )
-                logger.info(delegate_tx_info)
-
-                logger.info(
-                    "Recheck resources of the onetime address after energy delegation"
-                )
-                onetime_address_resources = tron_client.get_account_resource(
-                    onetime_publ_key
-                )
-                onetime_energy_available = onetime_address_resources.get(
-                    "EnergyLimit", 0
-                )
-                logger.info(
-                    f"{onetime_publ_key=} {onetime_energy_available=} {energy_needed=}"
-                )
-                if onetime_energy_available < energy_needed:
-                    logger.warning(
-                        "Onetime account has not enough energy after delegation. Terminating transfer."
-                    )
-                    return False
-                else:
-                    logger.info("Energy successfuly delegated")
-                    return True
-
     logger.info(f"Check ONETIME={onetime_publ_key} {symbol} balance")
     min_threshold = config.get_min_transfer_threshold(symbol)
     balance = Decimal(token_balance) / 10**precision
@@ -197,6 +127,9 @@ def transfer_trc20_from(onetime_acc, symbol):
         )
 
     if config.ENERGY_DELEGATION_MODE:
+        # Bind once for both acquire (delegation) and release (post-transfer undelegate) calls.
+        provider = get_energy_provider()
+
         logger.info(
             f"Initiating TRC20 tokens transfer from ONETIME={onetime_publ_key} to MAIN={main_publ_key} in ENERGY DELEGATION MODE"
         )
@@ -333,26 +266,27 @@ def transfer_trc20_from(onetime_acc, symbol):
                                 f"Energy diff = {energy_diff}. Terminating transfer."
                             )
 
-                        sun_needed = calc_sun_for_energy_delegation(
-                            energy_diff, onetime_address_resources
-                        )
-                        logger.info(
-                            f"Energy diff is {energy_diff}. TRX to delegate: {sun_needed / 1_000_000}"
-                        )
+                        energy_to_provision = energy_diff
                     else:
                         logger.warning("Terminating transfer.")
                         return
+                else:
+                    energy_to_provision = 0
             else:
                 logger.info("No delagated energy found")
-                sun_needed = calc_sun_for_energy_delegation(
-                    energy_needed, onetime_address_resources
-                )
+                energy_to_provision = energy_needed
 
-            logger.info(
-                f"Delegating {sun_needed / 1_000_000} TRX to {onetime_publ_key}"
-            )
-            if not delegate_energy(sun_needed):
-                return
+            if energy_to_provision > 0:
+                logger.info(
+                    f"Requesting energy provider to provision {energy_to_provision} energy on {onetime_publ_key}"
+                )
+                if not provider.acquire(
+                    onetime_publ_key,
+                    energy_to_provision,
+                    onetime_address_resources,
+                    minimum_energy_required=energy_needed,
+                ):
+                    return
 
             # Check available bandwidth before transfer trc20 tokens
             # from one_time to fee_deposit account
@@ -410,10 +344,7 @@ def transfer_trc20_from(onetime_acc, symbol):
     )
 
     if config.ENERGY_DELEGATION_MODE:
-        if config.DEVMODE_CELERY_NODELAY:
-            undelegate_energy(onetime_publ_key)
-        else:
-            undelegate_energy.delay(onetime_publ_key)
+        provider.release(onetime_publ_key)
 
     return {"tx_trx_res": tx_trx_res, "tx_token": tx_token_res}
 
