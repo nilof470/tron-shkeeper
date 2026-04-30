@@ -4,7 +4,7 @@
 
 ## Current position
 
-Phase 1 is complete on `gsd-phase-1-energyprovider-abstraction`. Plans 01-03 are complete; structural checks, Mode B local-stub smoke, post-review regression verification, and human approval are recorded. Phase 1.5 spike 003 is live-validated in the companion repo: a test re:Fee `rent_resource` order reached `delegated` and on-chain energy was confirmed. Phase 2 is implemented, code-reviewed, hardened, and structurally verified with mocked re:Fee smokes plus live order lifecycle validation. Phase 3 preparation is complete; full live USDT sweep is waiting for the generated sidecar-controlled onetime address to receive USDT.
+Phase 1 is complete on `gsd-phase-1-energyprovider-abstraction`. Plans 01-03 are complete; structural checks, Mode B local-stub smoke, post-review regression verification, and human approval are recorded. Phase 1.5 spike 003 is live-validated in the companion repo: a test re:Fee `rent_resource` order reached `delegated` and on-chain energy was confirmed. Phase 2 is implemented, code-reviewed, hardened, and structurally verified with mocked re:Fee smokes plus live order lifecycle validation. Phase 3 live e2e has passed: a real USDT-TRC20 sweep used re:Fee energy and moved `3 USDT` from the generated onetime wallet to fee_deposit with zero TRX burned for the USDT transfer. Production operator docs remain.
 
 ## Memory across sessions
 
@@ -26,7 +26,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 
 - Refund behavior on `failed`/`insufficient_funds` — does balance return to user account?
 - Error body shape (assume free-form text; tighten if structured).
-- Phase 3 full sweep proof: `ENERGY_SOURCE=refee` with a user-wallet holding USDT and zero TRX.
+- Production docs: add a `README.md` section for `ENERGY_SOURCE=refee`, `REFEE` JSON config, activation/bandwidth prerequisites, and retry behavior.
 
 ## Recent work
 
@@ -46,6 +46,8 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - 2026-04-30: Phase 2 deep review findings fixed in commits `b83d004` and `0432641`: selected-client bandwidth checks, empty API key validation, and `SUCCESS_STATUSES` usage.
 - 2026-04-30: Companion spike 003 live run succeeded with test API key and topped-up re:Fee balance: `pending -> delegated`, delegation latency `4.933s`, on-chain energy available `0 -> 64999`, no rate-limit headers observed. Probe needed browser-like User-Agent for urllib; production `requests` profile check returned HTTP 200.
 - 2026-04-30: Phase 3 prep artifacts created. Generated sidecar-controlled onetime address `TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7` in `/tmp/tron-shkeeper-phase3-e2e/database.db`; initial check shows private key present, account inactive, `0` USDT, `0` TRX.
+- 2026-04-30: Phase 3 live e2e succeeded. Onetime `TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7` swept `3 USDT` to fee_deposit `TRfonfrf1AqFzXqJTpad8Tz4EzvCBhZe5k`. Successful USDT tx: `9bdfabfee0c57508c0a58d1521c6f512ecb07f54eff219a8f56cf81f3b10634f`. The successful transfer used `130285` energy and `345` bandwidth; onetime ended with `0 USDT`, `0 TRX`.
+- 2026-04-30: Live e2e exposed bandwidth as a separate prerequisite from re:Fee energy. Commit `3b550e8` moved the onetime bandwidth precheck before energy estimation/re:Fee rental, so low-bandwidth repeat sweeps stop before creating a paid re:Fee order.
 
 ## Repo state
 
@@ -59,7 +61,8 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - State sync after approval is committed in `13e7aae`.
 - Phase 2 planning is committed in `e97bdf0`.
 - Phase 2 code/smoke/review-fix commits: `567a75e`, `e9e2d57`, `2a262fe`, `0eae4c7`, `66cc4bb`, `655ec4b`, `b83d004`, `0432641`.
+- Phase 3 prep/e2e commits: `1db2d97`, `c1c5876`, `174c975`, `3b550e8`.
 
 ## Next action
 
-Recommended next action: send `6-10 USDT-TRC20` and no TRX to `TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7`, then run Phase 3 `check-wallet`. If it reports `ready_for_clean_sweep=true`, run `run-sweep --yes` and record tx hashes/logs.
+Recommended next action: update production operator documentation in `README.md` for enabling re:Fee and explaining bandwidth/activation behavior.

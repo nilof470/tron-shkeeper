@@ -79,22 +79,24 @@
 
 ## Phase 3 — Live e2e validation + docs (was spike 004)
 
-**Status:** Prepared — waiting for USDT deposit to generated sidecar-controlled test wallet.
+**Status:** Live e2e passed — production operator docs pending.
 
 **Goal:** Real end-to-end test on TRON mainnet: a fresh user-wallet with a small USDT balance, sidecar configured with `ENERGY_SOURCE=refee`, observe the full sweep with zero TRX burned. Update operator docs.
 
 **Covers:** Verification of all REQ-* (live), plus operator-facing docs.
 
 **Deliverables:**
-- E2E test artifact (recorded log, tx hashes on tronscan, before/after balances).
+- E2E test artifact (recorded log, tx hashes on tronscan, before/after balances): recorded in `03-01-SUMMARY.md`.
 - Update to `tron-shkeeper/README.md` with a re:Fee setup section.
 - Optional helm chart override snippet for `vsys-host/helm-charts` users (or note in README).
 - Prepared runbook/helper under `.planning/phases/03-live-e2e-validation-docs/`.
 - Generated test onetime address: `TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7`.
+- Successful USDT transfer tx: `9bdfabfee0c57508c0a58d1521c6f512ecb07f54eff219a8f56cf81f3b10634f`.
+- re:Fee delegation tx used by the sweep: `7e034daae3e0c2ab20c36602740b5a21386792765ac62e79763ba5c3031ab740`.
 
 **Done when:**
-- One real USDT-TRC20 sweep completes via re:Fee with zero TRX burned, recorded with tx hashes.
-- Operator docs explain how to enable re:Fee in their helm `values.yaml`.
+- [x] One real USDT-TRC20 sweep completes via re:Fee with zero TRX burned for the USDT transfer, recorded with tx hashes.
+- [ ] Operator docs explain how to enable re:Fee in their helm `values.yaml`.
 
 **Risk:** Low (assumes Phase 2 passed). Cost: ~5–10 USDT for the test sweep + ~3 TRX re:Fee balance.
 
