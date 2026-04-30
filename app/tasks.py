@@ -27,6 +27,7 @@ from .db import query_db, query_db2
 from .wallet import Wallet
 from .utils import (
     est_vote_tx_bw_cons,
+    get_available_energy,
     get_energy_delegator,
     get_key,
     has_free_bw,
@@ -284,7 +285,7 @@ def transfer_trc20_from(onetime_acc, symbol):
 
         logger.info("Check the energy of onetime address")
 
-        onetime_energy_available = onetime_address_resources.get("EnergyLimit", 0)
+        onetime_energy_available = get_available_energy(onetime_address_resources)
         if onetime_energy_available >= energy_needed:
             logger.info(
                 f"Onetime account {onetime_publ_key} has {onetime_energy_available} "
@@ -297,42 +298,49 @@ def transfer_trc20_from(onetime_acc, symbol):
                 f"of {energy_needed} energy"
             )
 
-            logger.info("Check if energy was alread delegated")
+            if use_refee_energy_provider:
+                energy_to_provision = energy_needed - onetime_energy_available
+            else:
+                logger.info("Check if energy was alread delegated")
 
-            onetime_delegated_resources = (
-                tron_client.get_delegated_resource_account_index_v2(onetime_publ_key)
-            )
-
-            if "fromAccounts" in onetime_delegated_resources:
-                logger.info(
-                    f"Found delegated energy on onetime account. Details {onetime_delegated_resources=}"
+                onetime_delegated_resources = (
+                    tron_client.get_delegated_resource_account_index_v2(
+                        onetime_publ_key
+                    )
                 )
 
-                if onetime_energy_available < energy_needed:
-                    logger.warning(
-                        "Onetime account has not enough energy after previous delegation."
+                if "fromAccounts" in onetime_delegated_resources:
+                    logger.info(
+                        f"Found delegated energy on onetime account. Details {onetime_delegated_resources=}"
                     )
 
-                    if config.ENERGY_DELEGATION_MODE_ALLOW_ADDITIONAL_ENERGY_DELEGATION:
-                        logger.info(
-                            "Additional energy delegation is allowed. Calculating the difference."
+                    if onetime_energy_available < energy_needed:
+                        logger.warning(
+                            "Onetime account has not enough energy after previous delegation."
                         )
-                        energy_diff = energy_needed - onetime_energy_available
 
-                        if energy_diff <= 0:
-                            logger.warning(
-                                f"Energy diff = {energy_diff}. Terminating transfer."
+                        if (
+                            config.ENERGY_DELEGATION_MODE_ALLOW_ADDITIONAL_ENERGY_DELEGATION
+                        ):
+                            logger.info(
+                                "Additional energy delegation is allowed. Calculating the difference."
                             )
+                            energy_diff = energy_needed - onetime_energy_available
 
-                        energy_to_provision = energy_diff
+                            if energy_diff <= 0:
+                                logger.warning(
+                                    f"Energy diff = {energy_diff}. Terminating transfer."
+                                )
+
+                            energy_to_provision = energy_diff
+                        else:
+                            logger.warning("Terminating transfer.")
+                            return
                     else:
-                        logger.warning("Terminating transfer.")
-                        return
+                        energy_to_provision = 0
                 else:
-                    energy_to_provision = 0
-            else:
-                logger.info("No delagated energy found")
-                energy_to_provision = energy_needed
+                    logger.info("No delagated energy found")
+                    energy_to_provision = energy_needed
 
             if energy_to_provision > 0:
                 logger.info(

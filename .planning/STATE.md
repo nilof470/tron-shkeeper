@@ -49,6 +49,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - 2026-04-30: Phase 3 live e2e succeeded. Onetime `TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7` swept `3 USDT` to fee_deposit `TRfonfrf1AqFzXqJTpad8Tz4EzvCBhZe5k`. Successful USDT tx: `9bdfabfee0c57508c0a58d1521c6f512ecb07f54eff219a8f56cf81f3b10634f`. The successful transfer used `130285` energy and `345` bandwidth; onetime ended with `0 USDT`, `0 TRX`.
 - 2026-04-30: Live e2e exposed bandwidth as a separate prerequisite from re:Fee energy. Commit `3b550e8` moved the onetime bandwidth precheck before energy estimation/re:Fee rental, so low-bandwidth repeat sweeps stop before creating a paid re:Fee order.
 - 2026-04-30: Production operator docs added in `README.md`: `ENERGY_SOURCE=refee`, `REFEE` JSON, activation/bandwidth behavior, burn fallback flags, Helm/container env examples, and live validation evidence.
+- 2026-04-30: Final subagent review found three energy-accounting risks after the bandwidth follow-up. Fix applied: sweep/provider checks now use available energy (`EnergyLimit - EnergyUsed`), re:Fee mode ignores delegated-resource `fromAccounts` as an energy gate, and re:Fee top-up orders are sized from the missing energy delta.
 
 ## Repo state
 
@@ -63,6 +64,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - Phase 2 planning is committed in `e97bdf0`.
 - Phase 2 code/smoke/review-fix commits: `567a75e`, `e9e2d57`, `2a262fe`, `0eae4c7`, `66cc4bb`, `655ec4b`, `b83d004`, `0432641`.
 - Phase 3 prep/e2e commits: `1db2d97`, `c1c5876`, `174c975`, `3b550e8`.
+- Final review follow-up is recorded in Phase 3 review artifacts.
 
 ## Next action
 

@@ -1,0 +1,228 @@
+from decimal import Decimal
+from types import SimpleNamespace
+import unittest
+
+
+FEE_DEPOSIT = "TRfonfrf1AqFzXqJTpad8Tz4EzvCBhZe5k"
+ONETIME = "TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7"
+
+
+class FakeConfig:
+    ENERGY_SOURCE = "refee"
+    ENERGY_DELEGATION_MODE = False
+    ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT = False
+    ENERGY_DELEGATION_MODE_ALLOW_ADDITIONAL_ENERGY_DELEGATION = False
+    BANDWIDTH_PER_TRC20_TRANSFER_CALL = 346
+    TX_FEE_LIMIT = Decimal("50")
+
+    def get_contract_address(self, _symbol):
+        return "TCONTRACT"
+
+    def get_min_transfer_threshold(self, _symbol):
+        return Decimal("1")
+
+
+class FakeContractFunctions:
+    def decimals(self):
+        return 6
+
+    def balanceOf(self, _address):
+        return 3_000_000
+
+    def transfer(self, _dst, _amount):
+        return FakeTx()
+
+
+class FakeContract:
+    functions = FakeContractFunctions()
+
+
+class FakeTx:
+    txid = "txid"
+    _raw_data = {}
+
+    def with_owner(self, _owner):
+        return self
+
+    def fee_limit(self, _fee_limit):
+        return self
+
+    def build(self):
+        return self
+
+    def sign(self, _private_key):
+        return self
+
+    def broadcast(self):
+        return self
+
+    def wait(self):
+        return {"receipt": {"result": "SUCCESS"}}
+
+
+class FakeTronClient:
+    def __init__(self, account_resource, delegated_resource_index=None):
+        self.account_resource = account_resource
+        self.delegated_resource_index = delegated_resource_index or {}
+
+    def get_contract(self, _contract_address):
+        return FakeContract()
+
+    def get_account_resource(self, _address):
+        return self.account_resource
+
+    def get_estimated_energy(self, *_args, **_kwargs):
+        return 50_000
+
+    def get_delegated_resource_account_index_v2(self, _address):
+        return self.delegated_resource_index
+
+
+class RecordingProvider:
+    def __init__(self, acquire_result=False):
+        self.acquire_result = acquire_result
+        self.acquire_calls = []
+        self.release_calls = []
+
+    def acquire(self, *args, **kwargs):
+        self.acquire_calls.append((args, kwargs))
+        return self.acquire_result
+
+    def release(self, receiver):
+        self.release_calls.append(receiver)
+
+
+class RefeeEnergyAccountingTests(unittest.TestCase):
+    def patch_tasks(self, tasks, client, provider):
+        original_config = tasks.config
+        original_connection_manager = tasks.ConnectionManager
+        original_get_key = tasks.get_key
+        original_get_energy_provider = tasks.get_energy_provider
+
+        tasks.config = FakeConfig()
+        tasks.ConnectionManager = SimpleNamespace(client=lambda: client)
+
+        def fake_get_key(key_type, pub=None):
+            from app.schemas import KeyType
+
+            if key_type == KeyType.fee_deposit:
+                return object(), FEE_DEPOSIT
+            if key_type == KeyType.onetime:
+                return object(), pub
+            raise AssertionError(f"unexpected key type {key_type}")
+
+        tasks.get_key = fake_get_key
+        tasks.get_energy_provider = lambda tron_client=None: provider
+
+        def restore():
+            tasks.config = original_config
+            tasks.ConnectionManager = original_connection_manager
+            tasks.get_key = original_get_key
+            tasks.get_energy_provider = original_get_energy_provider
+
+        return restore
+
+    def test_refee_acquires_missing_energy_when_existing_energy_is_partly_used(self):
+        from app import tasks
+
+        provider = RecordingProvider(acquire_result=False)
+        client = FakeTronClient(
+            {
+                "EnergyLimit": 100_000,
+                "EnergyUsed": 90_000,
+                "freeNetLimit": 600,
+                "freeNetUsed": 0,
+                "NetLimit": 0,
+                "NetUsed": 0,
+            }
+        )
+        restore = self.patch_tasks(tasks, client, provider)
+        try:
+            result = tasks.transfer_trc20_from.run(ONETIME, "USDT")
+        finally:
+            restore()
+
+        self.assertIsNone(result)
+        self.assertEqual(len(provider.acquire_calls), 1)
+        args, kwargs = provider.acquire_calls[0]
+        self.assertEqual(args[0], ONETIME)
+        self.assertEqual(args[1], 40_000)
+        self.assertEqual(kwargs["minimum_energy_required"], 50_000)
+
+    def test_refee_rents_energy_when_only_bandwidth_is_already_delegated(self):
+        from app import tasks
+
+        provider = RecordingProvider(acquire_result=False)
+        client = FakeTronClient(
+            {
+                "EnergyLimit": 0,
+                "EnergyUsed": 0,
+                "freeNetLimit": 600,
+                "freeNetUsed": 0,
+                "NetLimit": 999,
+                "NetUsed": 0,
+            },
+            delegated_resource_index={"fromAccounts": ["TBANDWIDTH"]},
+        )
+        restore = self.patch_tasks(tasks, client, provider)
+        try:
+            result = tasks.transfer_trc20_from.run(ONETIME, "USDT")
+        finally:
+            restore()
+
+        self.assertIsNone(result)
+        self.assertEqual(len(provider.acquire_calls), 1)
+        args, kwargs = provider.acquire_calls[0]
+        self.assertEqual(args[1], 50_000)
+        self.assertEqual(kwargs["minimum_energy_required"], 50_000)
+
+    def test_refee_provider_orders_delta_but_verifies_total_available_energy(self):
+        from app.energy_provider import RefeeEnergyProvider
+
+        class FakeSettings:
+            energy_overprovision_factor = Decimal("1.05")
+            rent_duration_label = "1h"
+            timeout_sec = 1
+            poll_interval_sec = 0.01
+
+        provider = RefeeEnergyProvider(
+            tron_client=FakeTronClient(
+                {
+                    "EnergyLimit": 100_000,
+                    "EnergyUsed": 20_000,
+                    "freeNetLimit": 0,
+                    "freeNetUsed": 0,
+                    "NetLimit": 0,
+                    "NetUsed": 0,
+                }
+            )
+        )
+        created_orders = []
+        provider._create_order = lambda settings, receiver, amount: created_orders.append(
+            (receiver, amount)
+        ) or {"id": "order-1", "status": "pending"}
+        provider._wait_until_delegated = lambda settings, order_id, order: {
+            "id": order_id,
+            "status": "delegated",
+        }
+
+        original_config = __import__("app.energy_provider").energy_provider.config
+        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+            REFEE=FakeSettings()
+        )
+        try:
+            acquired = provider.acquire(
+                ONETIME,
+                30_000,
+                {},
+                minimum_energy_required=80_000,
+            )
+        finally:
+            __import__("app.energy_provider").energy_provider.config = original_config
+
+        self.assertTrue(acquired)
+        self.assertEqual(created_orders, [(ONETIME, 31_500)])
+
+
+if __name__ == "__main__":
+    unittest.main()

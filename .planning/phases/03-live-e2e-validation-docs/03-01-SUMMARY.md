@@ -83,6 +83,12 @@ threshold again while the same address has insufficient bandwidth, the sweep
 stops before creating a re:Fee order. The operator can wait for bandwidth to
 recover or delegate/rent bandwidth to that onetime address, then retry.
 
+Final subagent review found and fixed one additional energy-accounting class of
+risk: used energy is now subtracted from `EnergyLimit`, re:Fee mode no longer
+treats a delegated bandwidth source as proof of delegated energy, and re:Fee
+top-up orders are sized from the missing energy delta while still verifying the
+full required available energy.
+
 ## Next
 
-Run final branch review before ship/merge.
+Prepare the branch for ship/merge.

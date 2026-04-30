@@ -175,6 +175,13 @@ def has_free_bw(account, tx_bw, use_only_staked=False, tron_client=None):
     return True
 
 
+def get_available_energy(account_resource: dict) -> int:
+    return max(
+        account_resource.get("EnergyLimit", 0) - account_resource.get("EnergyUsed", 0),
+        0,
+    )
+
+
 def est_vote_tx_bw_cons(num_of_votes):
     return math.ceil(244 + (num_of_votes * 30))
 

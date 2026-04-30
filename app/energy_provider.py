@@ -9,7 +9,7 @@ import requests
 from .config import config
 from .connection_manager import ConnectionManager
 from .logging import logger
-from .utils import get_energy_delegator
+from .utils import get_available_energy, get_energy_delegator
 
 
 class EnergyProvider(ABC):
@@ -128,8 +128,8 @@ class StakingEnergyProvider(EnergyProvider):
                     "Recheck resources of the onetime address after energy delegation"
                 )
                 onetime_address_resources = tron_client.get_account_resource(receiver)
-                onetime_energy_available = onetime_address_resources.get(
-                    "EnergyLimit", 0
+                onetime_energy_available = get_available_energy(
+                    onetime_address_resources
                 )
                 logger.info(
                     f"{receiver=} {onetime_energy_available=} {energy_needed=}"
@@ -188,7 +188,7 @@ class RefeeEnergyProvider(EnergyProvider):
         )
         amount = int(
             (
-                Decimal(energy_required) * settings.energy_overprovision_factor
+                Decimal(energy_to_provision) * settings.energy_overprovision_factor
             ).to_integral_value(rounding=ROUND_CEILING)
         )
         logger.info(
@@ -215,7 +215,7 @@ class RefeeEnergyProvider(EnergyProvider):
         except Exception:
             logger.exception("re:Fee on-chain resource check failed")
             return False
-        onetime_energy_available = onetime_address_resources.get("EnergyLimit", 0)
+        onetime_energy_available = get_available_energy(onetime_address_resources)
         logger.info(
             f"re:Fee on-chain check: {receiver=} "
             f"{onetime_energy_available=} {energy_required=}"
