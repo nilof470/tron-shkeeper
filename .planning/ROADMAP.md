@@ -79,6 +79,8 @@
 
 ## Phase 3 — Live e2e validation + docs (was spike 004)
 
+**Status:** Prepared — waiting for USDT deposit to generated sidecar-controlled test wallet.
+
 **Goal:** Real end-to-end test on TRON mainnet: a fresh user-wallet with a small USDT balance, sidecar configured with `ENERGY_SOURCE=refee`, observe the full sweep with zero TRX burned. Update operator docs.
 
 **Covers:** Verification of all REQ-* (live), plus operator-facing docs.
@@ -87,6 +89,8 @@
 - E2E test artifact (recorded log, tx hashes on tronscan, before/after balances).
 - Update to `tron-shkeeper/README.md` with a re:Fee setup section.
 - Optional helm chart override snippet for `vsys-host/helm-charts` users (or note in README).
+- Prepared runbook/helper under `.planning/phases/03-live-e2e-validation-docs/`.
+- Generated test onetime address: `TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7`.
 
 **Done when:**
 - One real USDT-TRC20 sweep completes via re:Fee with zero TRX burned, recorded with tx hashes.

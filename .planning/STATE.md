@@ -4,7 +4,7 @@
 
 ## Current position
 
-Phase 1 is complete on `gsd-phase-1-energyprovider-abstraction`. Plans 01-03 are complete; structural checks, Mode B local-stub smoke, post-review regression verification, and human approval are recorded. Phase 1.5 spike 003 is live-validated in the companion repo: a test re:Fee `rent_resource` order reached `delegated` and on-chain energy was confirmed. Phase 2 is implemented, code-reviewed, hardened, and structurally verified with mocked re:Fee smokes plus live order lifecycle validation. Full live USDT sweep remains Phase 3.
+Phase 1 is complete on `gsd-phase-1-energyprovider-abstraction`. Plans 01-03 are complete; structural checks, Mode B local-stub smoke, post-review regression verification, and human approval are recorded. Phase 1.5 spike 003 is live-validated in the companion repo: a test re:Fee `rent_resource` order reached `delegated` and on-chain energy was confirmed. Phase 2 is implemented, code-reviewed, hardened, and structurally verified with mocked re:Fee smokes plus live order lifecycle validation. Phase 3 preparation is complete; full live USDT sweep is waiting for the generated sidecar-controlled onetime address to receive USDT.
 
 ## Memory across sessions
 
@@ -45,6 +45,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - 2026-04-30: Post-review verification reran compile/import/config smokes plus mocked re:Fee happy path, `completed` rejection, and burn-fallback path. Main repo worktree is clean after commit `66cc4bb`.
 - 2026-04-30: Phase 2 deep review findings fixed in commits `b83d004` and `0432641`: selected-client bandwidth checks, empty API key validation, and `SUCCESS_STATUSES` usage.
 - 2026-04-30: Companion spike 003 live run succeeded with test API key and topped-up re:Fee balance: `pending -> delegated`, delegation latency `4.933s`, on-chain energy available `0 -> 64999`, no rate-limit headers observed. Probe needed browser-like User-Agent for urllib; production `requests` profile check returned HTTP 200.
+- 2026-04-30: Phase 3 prep artifacts created. Generated sidecar-controlled onetime address `TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7` in `/tmp/tron-shkeeper-phase3-e2e/database.db`; initial check shows private key present, account inactive, `0` USDT, `0` TRX.
 
 ## Repo state
 
@@ -61,4 +62,4 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 
 ## Next action
 
-Recommended next action: Phase 3 live e2e validation with a controlled user-wallet that has a small USDT-TRC20 balance and zero TRX. Use the validated re:Fee key/balance path, record tx hashes/logs, and then write operator docs.
+Recommended next action: send `6-10 USDT-TRC20` and no TRX to `TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7`, then run Phase 3 `check-wallet`. If it reports `ready_for_clean_sweep=true`, run `run-sweep --yes` and record tx hashes/logs.
