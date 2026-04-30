@@ -4,7 +4,7 @@
 
 ## Current position
 
-Pre-Phase 1. Project scaffolding via shortcut path B (no `/gsd-new-project` interactive flow — artifacts seeded from spike 001/002 findings in companion repo `shkeeper.io`).
+Phase 1 planned. Project scaffolding was created via shortcut path B (no `/gsd-new-project` interactive flow — artifacts seeded from spike 001/002 findings in companion repo `shkeeper.io`). Phase 1 plans have been reviewed and corrected for the staking top-up energy recheck edge.
 
 ## Memory across sessions
 
@@ -32,14 +32,15 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 ## Recent work
 
 - 2026-04-30: spikes 001 and 002 completed in `shkeeper.io` repo. Architectural design verified down to `app/tasks.py:354`.
-- 2026-04-30: this `.planning/` scaffolded via shortcut B; ready for `/gsd-plan-phase 1`.
+- 2026-04-30: this `.planning/` scaffolded via shortcut B.
+- 2026-04-30: `/gsd-plan-phase 1` reviewed existing Phase 1 plans and corrected the EnergyProvider `acquire` contract so staking top-ups delegate `energy_diff` while still verifying full `energy_needed`.
 
 ## Repo state
 
 - Branch: `master` (in this repo).
-- `.planning/` is being added in the same commit as scaffold.
+- `.planning/` contains uncommitted planning artifacts for Phase 1.
 - No code changes yet.
 
 ## Next action
 
-`/gsd-plan-phase 1` from inside `/Users/test/PycharmProjects/tron-shkeeper`. The plan will produce a concrete PLAN.md for the EnergyProvider refactor.
+`/gsd-execute-phase 1` from inside `/Users/test/PycharmProjects/tron-shkeeper`.
