@@ -1,6 +1,10 @@
 import json
 import math
+import time
 from abc import ABC, abstractmethod
+from decimal import Decimal, ROUND_CEILING
+
+import requests
 
 from .config import config
 from .connection_manager import ConnectionManager
@@ -156,5 +160,173 @@ class StakingEnergyProvider(EnergyProvider):
         return int(trx * 1_000_000)
 
 
+class RefeeEnergyProvider(EnergyProvider):
+    REQUEST_TIMEOUT_SEC = 10
+    SUCCESS_STATUSES = {"delegated", "completed"}
+    FAILURE_STATUSES = {"failed", "insufficient_funds", "canceled"}
+
+    def __init__(self, tron_client=None):
+        self.tron_client = tron_client
+
+    def acquire(
+        self,
+        receiver: str,
+        energy_to_provision: int,
+        account_resource: dict,
+        *,
+        minimum_energy_required: int | None = None,
+    ) -> bool:
+        settings = config.REFEE
+        if settings is None:
+            logger.warning("REFEE config is missing. Terminating transfer.")
+            return False
+
+        energy_required = (
+            energy_to_provision
+            if minimum_energy_required is None
+            else minimum_energy_required
+        )
+        amount = int(
+            (
+                Decimal(energy_required) * settings.energy_overprovision_factor
+            ).to_integral_value(rounding=ROUND_CEILING)
+        )
+        logger.info(
+            f"Requesting re:Fee energy rental for {receiver}: "
+            f"{amount} energy for {settings.rent_duration_label}"
+        )
+
+        order = self._create_order(settings, receiver, amount)
+        if order is None:
+            return False
+
+        order_id = order.get("id")
+        if not order_id:
+            logger.warning(f"re:Fee order response has no id field: {order}")
+            return False
+
+        delegated_order = self._wait_until_delegated(settings, order_id, order)
+        if delegated_order is None:
+            return False
+
+        tron_client = self.tron_client or ConnectionManager.client()
+        onetime_address_resources = tron_client.get_account_resource(receiver)
+        onetime_energy_available = onetime_address_resources.get("EnergyLimit", 0)
+        logger.info(
+            f"re:Fee on-chain check: {receiver=} "
+            f"{onetime_energy_available=} {energy_required=}"
+        )
+        if onetime_energy_available < energy_required:
+            logger.warning(
+                "Onetime account has not enough energy after re:Fee delegation. "
+                "Terminating transfer."
+            )
+            return False
+
+        logger.info(f"re:Fee energy successfully delegated: {delegated_order}")
+        return True
+
+    def release(self, receiver: str) -> None:
+        logger.info(
+            f"re:Fee energy for {receiver} returns after rent expiration. "
+            "Skipping undelegate."
+        )
+
+    def _create_order(self, settings, receiver: str, amount: int) -> dict | None:
+        url = self._url(settings, "/api/rent_resource/orders")
+        payload = {
+            "address": receiver,
+            "amount": amount,
+            "resource": "energy",
+            "duration_label": settings.rent_duration_label,
+        }
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                headers=self._headers(settings),
+                timeout=self.REQUEST_TIMEOUT_SEC,
+            )
+        except requests.RequestException:
+            logger.exception("re:Fee create order request failed")
+            return None
+
+        if response.status_code != 202:
+            logger.warning(
+                f"re:Fee create order rejected with status "
+                f"{response.status_code}: {response.text}"
+            )
+            return None
+
+        try:
+            data = response.json()
+        except ValueError:
+            logger.exception("re:Fee create order response is not valid JSON")
+            return None
+
+        logger.info(f"re:Fee order accepted: {data}")
+        return data
+
+    def _wait_until_delegated(
+        self, settings, order_id: str, initial_order: dict
+    ) -> dict | None:
+        deadline = time.monotonic() + settings.timeout_sec
+        order = initial_order
+        last_status = None
+
+        while time.monotonic() <= deadline:
+            status = order.get("status")
+            if status != last_status:
+                logger.info(f"re:Fee order {order_id} status: {status}")
+                last_status = status
+
+            if status == "delegated" or status == "completed":
+                return order
+            if status in self.FAILURE_STATUSES:
+                logger.warning(f"re:Fee order {order_id} failed: {order}")
+                return None
+
+            time.sleep(settings.poll_interval_sec)
+
+            try:
+                response = requests.get(
+                    self._url(settings, f"/api/rent_resource/orders/{order_id}"),
+                    headers=self._headers(settings),
+                    timeout=self.REQUEST_TIMEOUT_SEC,
+                )
+            except requests.RequestException:
+                logger.exception(f"re:Fee poll request failed for order {order_id}")
+                return None
+
+            if response.status_code != 200:
+                logger.warning(
+                    f"re:Fee poll for order {order_id} returned status "
+                    f"{response.status_code}: {response.text}"
+                )
+                return None
+
+            try:
+                order = response.json()
+            except ValueError:
+                logger.exception(f"re:Fee poll response is not valid JSON: {order_id}")
+                return None
+
+        logger.warning(
+            f"re:Fee order {order_id} did not reach delegated status within "
+            f"{settings.timeout_sec} seconds"
+        )
+        return None
+
+    @staticmethod
+    def _headers(settings) -> dict:
+        return {"X-API-Key": settings.api_key.get_secret_value()}
+
+    @staticmethod
+    def _url(settings, path: str) -> str:
+        return f"{settings.api_base_url.rstrip('/')}{path}"
+
+
 def get_energy_provider(tron_client=None) -> EnergyProvider:
+    if config.ENERGY_SOURCE == "refee":
+        return RefeeEnergyProvider(tron_client=tron_client)
     return StakingEnergyProvider(tron_client=tron_client)
