@@ -479,6 +479,10 @@ def undelegate_energy(receiver):
     logger.debug(undelegate_tx_info)
 
 
+def _should_sweep_trx_balance(balance: Decimal) -> bool:
+    return balance >= config.TRX_MIN_TRANSFER_THRESHOLD
+
+
 @celery.task()
 def transfer_trx_from(onetime_publ_key):
     """
@@ -502,6 +506,16 @@ def transfer_trx_from(onetime_publ_key):
         return
 
     tron_client = ConnectionManager.client()
+    onetime_acc_balance = tron_client.get_account_balance(onetime_publ_key)
+    if onetime_acc_balance == 0:
+        return {"status": "error", "error": "skipping 0 TRX account"}
+    if not _should_sweep_trx_balance(onetime_acc_balance):
+        logger.info(
+            f"{onetime_publ_key} TRX balance {onetime_acc_balance} is below "
+            f"sweep threshold {config.TRX_MIN_TRANSFER_THRESHOLD}. Leaving TRX on account."
+        )
+        return
+
     onetime_priv_key = PrivateKey(
         bytes.fromhex(
             wallet_encryption.decrypt(
@@ -513,10 +527,6 @@ def transfer_trx_from(onetime_publ_key):
             )
         )
     )
-
-    onetime_acc_balance = tron_client.get_account_balance(onetime_publ_key)
-    if onetime_acc_balance == 0:
-        return {"status": "error", "error": "skipping 0 TRX account"}
 
     tx_trx = tron_client.trx.transfer(
         onetime_publ_key, main_publ_key, int(onetime_acc_balance * 1_000_000)
@@ -678,7 +688,15 @@ def scan_accounts(self, *args, **kwargs):
                     session.commit()
 
                 if trx_balance > 0:
-                    balances_to_collect["trx"].append([account, trx_balance])
+                    if _should_sweep_trx_balance(trx_balance):
+                        balances_to_collect["trx"].append([account, trx_balance])
+                    else:
+                        logger.debug(
+                            "%s TRX on %s is below sweep threshold %s; leaving it on account",
+                            trx_balance,
+                            account,
+                            config.TRX_MIN_TRANSFER_THRESHOLD,
+                        )
 
                 logger.debug(
                     f"Scanned {index} of {len(accounts)} accounts, found: "
@@ -716,14 +734,10 @@ def scan_accounts(self, *args, **kwargs):
 
         # Sort trx balances by balance in descending order
         balances_to_collect["trx"].sort(key=lambda x: x[1], reverse=True)
-        # logger.info(balances_to_collect["trx"])
         for account, trx_balance in balances_to_collect["trx"]:
             if not is_task_running(
                 self, "app.tasks.transfer_trc20_from", args=[account]
             ):
-                # We don't need to check if account has a free bandwidth because tx will raise tronpy.exceptions.ValidationError
-                # if there is not enough TRX to burn for bandwidth. We are sending the entire TRX balance,
-                # so there will be no TRX to burn for sure.
                 transfer_trx_from(account)
 
     return stats

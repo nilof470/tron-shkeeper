@@ -177,7 +177,11 @@ class BlockScanner:
             raise NotificationFailed(res)
 
     def scan(self, block_num: int) -> bool:
-        from .tasks import transfer_trc20_from, transfer_trx_from
+        from .tasks import (
+            _should_sweep_trx_balance,
+            transfer_trc20_from,
+            transfer_trx_from,
+        )
         from .custom.aml.functions import (
             add_transaction_to_db,
         )
@@ -297,7 +301,14 @@ class BlockScanner:
                                             tron_tx.dst_addr, tron_tx.symbol
                                         )
                                 else:
-                                    transfer_trx_from.delay(tron_tx.dst_addr)
+                                    if _should_sweep_trx_balance(tron_tx.amount):
+                                        transfer_trx_from.delay(tron_tx.dst_addr)
+                                    else:
+                                        logger.info(
+                                            f"TRX balance {tron_tx.amount} is below "
+                                            "sweep threshold; leaving TRX on "
+                                            f"one-time account {tron_tx.dst_addr}"
+                                        )
                             else:
                                 logger.warning(
                                     f"Not sending notification for tx with status {tron_tx.status}: {tron_tx}"
