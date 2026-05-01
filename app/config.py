@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     ENERGY_DELEGATION_MODE_ENERGY_ACCOUNT_PUB_KEY: str | None = None
     ENERGY_SOURCE: Literal["staking", "refee"] = "staking"
     REFEE: Json[RefeeConfig] | None = None
+    REFEE_FIXED_ENERGY_ORDER_AMOUNT: int = Field(65_000, ge=0)
     # Voting
     SR_VOTING: bool = False
     SR_VOTES: Json[List[SrVote]] | None = None
@@ -172,6 +173,16 @@ class Settings(BaseSettings):
     def validate_refee_config_state(self):
         if self.ENERGY_SOURCE == "refee" and self.REFEE is None:
             raise ValueError("REFEE must be configured when ENERGY_SOURCE='refee'")
+        if (
+            self.ENERGY_SOURCE == "refee"
+            and self.REFEE is not None
+            and self.REFEE_FIXED_ENERGY_ORDER_AMOUNT > 0
+            and self.REFEE_FIXED_ENERGY_ORDER_AMOUNT < self.REFEE.min_energy_order_amount
+        ):
+            raise ValueError(
+                "REFEE_FIXED_ENERGY_ORDER_AMOUNT must be 0 or greater than or "
+                "equal to REFEE.min_energy_order_amount"
+            )
         return self
 
 

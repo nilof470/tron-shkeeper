@@ -46,6 +46,7 @@ Set `ENERGY_SOURCE=refee` and provide `REFEE` as JSON:
 ```bash
 export ENERGY_SOURCE=refee
 export REFEE='{"api_key":"YOUR_REFEE_API_KEY","rent_duration_label":"1h"}'
+export REFEE_FIXED_ENERGY_ORDER_AMOUNT=65000
 ```
 
 Optional `REFEE` fields:
@@ -67,9 +68,12 @@ Allowed `rent_duration_label` values are `1h`, `1d`, `3d`, `7d`, and `14d`.
 startup fails if `REFEE` is missing.
 
 `min_energy_order_amount` defaults to `30000`, matching the live re:Fee energy
-order minimum observed from the API. The sidecar still estimates the missing
-energy for each sweep, applies `energy_overprovision_factor`, and then uses this
-minimum as a floor for small top-up orders.
+order minimum observed from the API. `REFEE_FIXED_ENERGY_ORDER_AMOUNT` defaults
+to `65000`, so the sidecar ensures at least 65k energy is available before a
+re:Fee sweep after the fee-deposit wallet has already been initialized with
+USDT. Fixed values must be `0` or greater than or equal to
+`min_energy_order_amount`. Set `REFEE_FIXED_ENERGY_ORDER_AMOUNT=0` to restore
+dynamic sizing from the fullnode estimate and `energy_overprovision_factor`.
 
 ## Sweep Prerequisites
 
@@ -136,6 +140,7 @@ shape for a `values.yaml` override:
 env:
   ENERGY_SOURCE: refee
   REFEE: '{"api_key":"YOUR_REFEE_API_KEY","rent_duration_label":"1h"}'
+  REFEE_FIXED_ENERGY_ORDER_AMOUNT: "65000"
   ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT: "false"
   ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH: "false"
 ```
@@ -148,11 +153,16 @@ env:
     value: refee
   - name: REFEE
     value: '{"api_key":"YOUR_REFEE_API_KEY","rent_duration_label":"1h"}'
+  - name: REFEE_FIXED_ENERGY_ORDER_AMOUNT
+    value: "65000"
   - name: ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT
     value: "false"
   - name: ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH
     value: "false"
 ```
+
+For the full k3s/Helm deployment runbook used with the private GHCR image and
+re:Fee configuration, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Live re:Fee Validation
 

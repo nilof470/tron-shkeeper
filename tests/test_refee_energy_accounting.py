@@ -332,6 +332,169 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
         self.assertTrue(acquired)
         self.assertEqual(created_orders, [(ONETIME, 31_500)])
 
+    def test_refee_provider_uses_fixed_order_amount_when_configured(self):
+        from app.energy_provider import RefeeEnergyProvider
+
+        class FakeSettings:
+            energy_overprovision_factor = Decimal("1.01")
+            min_energy_order_amount = 30_000
+            rent_duration_label = "1h"
+            timeout_sec = 1
+            poll_interval_sec = 0.01
+
+        provider = RefeeEnergyProvider(
+            tron_client=SequencedResourceTronClient(
+                [
+                    {
+                        "EnergyLimit": 0,
+                        "EnergyUsed": 0,
+                        "freeNetLimit": 0,
+                        "freeNetUsed": 0,
+                        "NetLimit": 0,
+                        "NetUsed": 0,
+                    },
+                    {
+                        "EnergyLimit": 65_000,
+                        "EnergyUsed": 0,
+                        "freeNetLimit": 0,
+                        "freeNetUsed": 0,
+                        "NetLimit": 0,
+                        "NetUsed": 0,
+                    },
+                ]
+            )
+        )
+        created_orders = []
+        provider._create_order = lambda settings, receiver, amount: created_orders.append(
+            (receiver, amount)
+        ) or {"id": "order-1", "status": "pending"}
+        provider._wait_until_delegated = lambda settings, order_id, order: {
+            "id": order_id,
+            "status": "delegated",
+        }
+
+        original_config = __import__("app.energy_provider").energy_provider.config
+        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+            REFEE=FakeSettings(),
+            REFEE_FIXED_ENERGY_ORDER_AMOUNT=65_000,
+        )
+        try:
+            acquired = provider.acquire(
+                ONETIME,
+                72_321,
+                {},
+                minimum_energy_required=72_321,
+            )
+        finally:
+            __import__("app.energy_provider").energy_provider.config = original_config
+
+        self.assertTrue(acquired)
+        self.assertEqual(created_orders, [(ONETIME, 65_000)])
+
+    def test_refee_provider_dynamic_mode_when_fixed_order_amount_is_zero(self):
+        from app.energy_provider import RefeeEnergyProvider
+
+        class FakeSettings:
+            energy_overprovision_factor = Decimal("1.05")
+            min_energy_order_amount = 30_000
+            rent_duration_label = "1h"
+            timeout_sec = 1
+            poll_interval_sec = 0.01
+
+        provider = RefeeEnergyProvider(
+            tron_client=SequencedResourceTronClient(
+                [
+                    {
+                        "EnergyLimit": 100_000,
+                        "EnergyUsed": 50_000,
+                        "freeNetLimit": 0,
+                        "freeNetUsed": 0,
+                        "NetLimit": 0,
+                        "NetUsed": 0,
+                    },
+                    {
+                        "EnergyLimit": 100_000,
+                        "EnergyUsed": 20_000,
+                        "freeNetLimit": 0,
+                        "freeNetUsed": 0,
+                        "NetLimit": 0,
+                        "NetUsed": 0,
+                    },
+                ]
+            )
+        )
+        created_orders = []
+        provider._create_order = lambda settings, receiver, amount: created_orders.append(
+            (receiver, amount)
+        ) or {"id": "order-1", "status": "pending"}
+        provider._wait_until_delegated = lambda settings, order_id, order: {
+            "id": order_id,
+            "status": "delegated",
+        }
+
+        original_config = __import__("app.energy_provider").energy_provider.config
+        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+            REFEE=FakeSettings(),
+            REFEE_FIXED_ENERGY_ORDER_AMOUNT=0,
+        )
+        try:
+            acquired = provider.acquire(
+                ONETIME,
+                30_000,
+                {},
+                minimum_energy_required=80_000,
+            )
+        finally:
+            __import__("app.energy_provider").energy_provider.config = original_config
+
+        self.assertTrue(acquired)
+        self.assertEqual(created_orders, [(ONETIME, 31_500)])
+
+    def test_refee_provider_fixed_mode_skips_order_when_energy_already_available(self):
+        from app.energy_provider import RefeeEnergyProvider
+
+        class FakeSettings:
+            energy_overprovision_factor = Decimal("1.01")
+            min_energy_order_amount = 30_000
+            rent_duration_label = "1h"
+            timeout_sec = 1
+            poll_interval_sec = 0.01
+
+        provider = RefeeEnergyProvider(
+            tron_client=FakeTronClient(
+                {
+                    "EnergyLimit": 70_000,
+                    "EnergyUsed": 0,
+                    "freeNetLimit": 0,
+                    "freeNetUsed": 0,
+                    "NetLimit": 0,
+                    "NetUsed": 0,
+                }
+            )
+        )
+        created_orders = []
+        provider._create_order = lambda settings, receiver, amount: created_orders.append(
+            (receiver, amount)
+        ) or {"id": "order-1", "status": "pending"}
+
+        original_config = __import__("app.energy_provider").energy_provider.config
+        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+            REFEE=FakeSettings(),
+            REFEE_FIXED_ENERGY_ORDER_AMOUNT=65_000,
+        )
+        try:
+            acquired = provider.acquire(
+                ONETIME,
+                72_321,
+                {},
+                minimum_energy_required=72_321,
+            )
+        finally:
+            __import__("app.energy_provider").energy_provider.config = original_config
+
+        self.assertTrue(acquired)
+        self.assertEqual(created_orders, [])
+
     def test_refee_provider_skips_new_order_when_receiver_already_has_required_energy(self):
         from app.energy_provider import RefeeEnergyProvider
 

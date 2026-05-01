@@ -76,6 +76,16 @@ class Phase2ReviewFixTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             RefeeConfig(api_key="secret", api_base_url="http://api.refee.test")
 
+    def test_refee_fixed_energy_amount_must_not_be_below_order_minimum(self):
+        from app.config import Settings
+
+        with self.assertRaises(ValidationError):
+            Settings(
+                ENERGY_SOURCE="refee",
+                REFEE='{"api_key":"secret","min_energy_order_amount":30000}',
+                REFEE_FIXED_ENERGY_ORDER_AMOUNT=20_000,
+            )
+
     def test_refee_provider_uses_success_status_set(self):
         provider = energy_provider.RefeeEnergyProvider()
         provider.SUCCESS_STATUSES = {"custom-success"}

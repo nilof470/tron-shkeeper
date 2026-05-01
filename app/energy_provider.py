@@ -181,11 +181,21 @@ class RefeeEnergyProvider(EnergyProvider):
             logger.warning("REFEE config is missing. Terminating transfer.")
             return False
 
-        energy_required = (
+        estimated_energy_required = (
             energy_to_provision
             if minimum_energy_required is None
             else minimum_energy_required
         )
+        fixed_order_amount = getattr(config, "REFEE_FIXED_ENERGY_ORDER_AMOUNT", 0)
+        energy_required = (
+            fixed_order_amount if fixed_order_amount > 0 else estimated_energy_required
+        )
+        if fixed_order_amount > 0:
+            logger.info(
+                "Using fixed re:Fee energy order amount: "
+                f"{fixed_order_amount} energy; "
+                f"estimated requirement was {estimated_energy_required}"
+            )
         tron_client = self.tron_client or ConnectionManager.client()
         onetime_energy_available = self._get_available_energy(
             tron_client, receiver, "pre-order"
@@ -198,13 +208,16 @@ class RefeeEnergyProvider(EnergyProvider):
                 f"{onetime_energy_available=} {energy_required=}"
             )
             return True
-        energy_to_provision = energy_required - onetime_energy_available
 
-        requested_amount = int(
-            (
-                Decimal(energy_to_provision) * settings.energy_overprovision_factor
-            ).to_integral_value(rounding=ROUND_CEILING)
-        )
+        if fixed_order_amount > 0:
+            requested_amount = fixed_order_amount
+        else:
+            energy_to_provision = energy_required - onetime_energy_available
+            requested_amount = int(
+                (
+                    Decimal(energy_to_provision) * settings.energy_overprovision_factor
+                ).to_integral_value(rounding=ROUND_CEILING)
+            )
         amount = max(requested_amount, settings.min_energy_order_amount)
         logger.info(
             f"Requesting re:Fee energy rental for {receiver}: "
