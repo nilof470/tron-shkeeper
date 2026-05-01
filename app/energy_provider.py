@@ -198,6 +198,7 @@ class RefeeEnergyProvider(EnergyProvider):
                 f"{onetime_energy_available=} {energy_required=}"
             )
             return True
+        energy_to_provision = energy_required - onetime_energy_available
 
         requested_amount = int(
             (

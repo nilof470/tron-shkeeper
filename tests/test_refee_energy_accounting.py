@@ -380,6 +380,64 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
         self.assertTrue(acquired)
         self.assertEqual(created_orders, [])
 
+    def test_refee_provider_recalculates_order_from_fresh_missing_energy(self):
+        from app.energy_provider import RefeeEnergyProvider
+
+        class FakeSettings:
+            energy_overprovision_factor = Decimal("1.05")
+            min_energy_order_amount = 30_000
+            rent_duration_label = "1h"
+            timeout_sec = 1
+            poll_interval_sec = 0.01
+
+        provider = RefeeEnergyProvider(
+            tron_client=SequencedResourceTronClient(
+                [
+                    {
+                        "EnergyLimit": 80_000,
+                        "EnergyUsed": 0,
+                        "freeNetLimit": 0,
+                        "freeNetUsed": 0,
+                        "NetLimit": 0,
+                        "NetUsed": 0,
+                    },
+                    {
+                        "EnergyLimit": 100_000,
+                        "EnergyUsed": 0,
+                        "freeNetLimit": 0,
+                        "freeNetUsed": 0,
+                        "NetLimit": 0,
+                        "NetUsed": 0,
+                    },
+                ]
+            )
+        )
+        created_orders = []
+        provider._create_order = lambda settings, receiver, amount: created_orders.append(
+            (receiver, amount)
+        ) or {"id": "order-1", "status": "pending"}
+        provider._wait_until_delegated = lambda settings, order_id, order: {
+            "id": order_id,
+            "status": "delegated",
+        }
+
+        original_config = __import__("app.energy_provider").energy_provider.config
+        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+            REFEE=FakeSettings()
+        )
+        try:
+            acquired = provider.acquire(
+                ONETIME,
+                100_000,
+                {},
+                minimum_energy_required=100_000,
+            )
+        finally:
+            __import__("app.energy_provider").energy_provider.config = original_config
+
+        self.assertTrue(acquired)
+        self.assertEqual(created_orders, [(ONETIME, 30_000)])
+
     def test_refee_provider_applies_live_api_minimum_energy_order_amount(self):
         from app.energy_provider import RefeeEnergyProvider
 
