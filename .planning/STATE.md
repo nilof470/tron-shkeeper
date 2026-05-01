@@ -1,6 +1,6 @@
 # Project State
 
-**Last updated:** 2026-04-30
+**Last updated:** 2026-05-01
 
 ## Current position
 
@@ -20,7 +20,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - Default `REFEE.energy_overprovision_factor=1.05` (5% safety margin over chain-estimated energy).
 - Default `REFEE.min_energy_order_amount=30000`, matching the live re:Fee `resource=energy` order minimum observed from the API.
 - Default `REFEE.timeout_sec=60` and `REFEE.poll_interval_sec=2.0` remain conservative after spike 003 measured live delegation at 4.933s.
-- Idempotency: rely on existing `EnergyLimit ≥ energy_needed` check at `app/tasks.py:297-303`. No external_id, no new state.
+- Idempotency / rental de-dupe: rely on the sweep-level available-energy check plus the provider pre-order recheck before paid re:Fee orders. No external_id, no new state.
 - Repo: `nilof470/tron-shkeeper` fork. Upstream `vsys-host/tron-shkeeper` push is disabled locally. Personal fork — no upstream PR.
 
 ## Open questions
@@ -53,6 +53,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - 2026-04-30: Final subagent review found three energy-accounting risks after the bandwidth follow-up. Fix applied: sweep/provider checks now use available energy (`EnergyLimit - EnergyUsed`), re:Fee mode ignores delegated-resource `fromAccounts` as an energy gate, and re:Fee top-up orders are sized from the missing energy delta.
 - 2026-04-30: Follow-up post-fix review warning validated and fixed: staking mode with partial usable energy and no `fromAccounts` now delegates only the missing energy delta, covered by a RED/GREEN regression test.
 - 2026-04-30: Live re:Fee API probe confirmed `resource=energy` order quantity must be `30000..5000000`; code now floors small re:Fee top-up orders at `REFEE.min_energy_order_amount=30000`.
+- 2026-05-01: Quick review fixes applied in `fd9f173`: TRC20 sweep receipts are checked before success/release, re:Fee acquire rechecks on-chain energy before creating a paid order, transient poll failures continue until timeout, and `REFEE.api_base_url` now requires HTTPS.
 
 ## Repo state
 
@@ -68,6 +69,13 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 - Phase 2 code/smoke/review-fix commits: `567a75e`, `e9e2d57`, `2a262fe`, `0eae4c7`, `66cc4bb`, `655ec4b`, `b83d004`, `0432641`.
 - Phase 3 prep/e2e commits: `1db2d97`, `c1c5876`, `174c975`, `3b550e8`.
 - Final review follow-up is recorded in Phase 3 review artifacts.
+- Quick reFee review hardening is committed in `fd9f173`.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 20260501-153648 | Fix validated reFee sweep review findings: receipt validation, duplicate rental retry risk, and api_base_url HTTPS validation | 2026-05-01 | fd9f173 | [20260501-153648-refee-review-fixes](./quick/20260501-153648-refee-review-fixes/) |
 
 ## Next action
 
