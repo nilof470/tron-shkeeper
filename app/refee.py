@@ -1,5 +1,6 @@
 from decimal import Decimal
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
@@ -12,6 +13,15 @@ class RefeeConfig(BaseModel):
     min_energy_order_amount: int = Field(default=30_000, gt=0)
     poll_interval_sec: float = Field(default=2.0, gt=0)
     timeout_sec: int = Field(default=60, gt=0)
+
+    @field_validator("api_base_url")
+    @classmethod
+    def validate_api_base_url(cls, value: str) -> str:
+        value = value.strip()
+        parsed = urlparse(value)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise ValueError("api_base_url must be an HTTPS URL")
+        return value
 
     @field_validator("api_key")
     @classmethod

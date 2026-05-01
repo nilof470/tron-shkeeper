@@ -72,6 +72,10 @@ class Phase2ReviewFixTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             RefeeConfig(api_key="")
 
+    def test_refee_config_rejects_non_https_api_base_url(self):
+        with self.assertRaises(ValidationError):
+            RefeeConfig(api_key="secret", api_base_url="http://api.refee.test")
+
     def test_refee_provider_uses_success_status_set(self):
         provider = energy_provider.RefeeEnergyProvider()
         provider.SUCCESS_STATUSES = {"custom-success"}
@@ -87,10 +91,45 @@ class Phase2ReviewFixTests(unittest.TestCase):
 
         self.assertEqual(order, {"id": "order-1", "status": "custom-success"})
 
+    def test_refee_poll_continues_after_transient_request_failure(self):
+        provider = energy_provider.RefeeEnergyProvider()
+
+        original_get = energy_provider.requests.get
+        energy_provider.requests.get = MockTransientRequestGet()
+        try:
+            order = provider._wait_until_delegated(
+                RefeeSettings(), "order-1", {"id": "order-1", "status": "pending"}
+            )
+        finally:
+            energy_provider.requests.get = original_get
+
+        self.assertEqual(order, {"id": "order-1", "status": "delegated"})
+
 
 class MockRequestGet:
     def __call__(self, *args, **kwargs):
         raise RequestException("poll should not run for configured success status")
+
+
+class MockTransientRequestGet:
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise RequestException("temporary network failure")
+        return MockJsonResponse(200, {"id": "order-1", "status": "delegated"})
+
+
+class MockJsonResponse:
+    def __init__(self, status_code, data):
+        self.status_code = status_code
+        self._data = data
+        self.text = str(data)
+
+    def json(self):
+        return self._data
 
 
 if __name__ == "__main__":

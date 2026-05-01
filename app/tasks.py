@@ -123,6 +123,10 @@ def _fund_onetime_for_trc20_burn(
     return True, tx_trx_res
 
 
+def _trc20_transfer_succeeded(tx_info: dict) -> bool:
+    return tx_info.get("receipt", {}).get("result") == "SUCCESS"
+
+
 @celery.task()
 def transfer_trc20_from(onetime_acc, symbol):
     """
@@ -410,6 +414,12 @@ def transfer_trc20_from(onetime_acc, symbol):
     tx_token = tx_token.build()
     tx_token = tx_token.sign(onetime_priv_key)
     tx_token_res = tx_token.broadcast().wait()
+    if not _trc20_transfer_succeeded(tx_token_res):
+        logger.warning(
+            f"{symbol} transfer from {onetime_publ_key} to {main_publ_key} "
+            f"failed with {tx_token.txid}. Details: {tx_token_res}"
+        )
+        return
     logger.info(
         f"{token_balance / 10**precision} {symbol} sent to {main_publ_key} with {tx_token.txid}. Details: {tx_token_res}"
     )

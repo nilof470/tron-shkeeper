@@ -186,6 +186,19 @@ class RefeeEnergyProvider(EnergyProvider):
             if minimum_energy_required is None
             else minimum_energy_required
         )
+        tron_client = self.tron_client or ConnectionManager.client()
+        onetime_energy_available = self._get_available_energy(
+            tron_client, receiver, "pre-order"
+        )
+        if onetime_energy_available is None:
+            return False
+        if onetime_energy_available >= energy_required:
+            logger.info(
+                f"re:Fee order not needed for {receiver}: "
+                f"{onetime_energy_available=} {energy_required=}"
+            )
+            return True
+
         requested_amount = int(
             (
                 Decimal(energy_to_provision) * settings.energy_overprovision_factor
@@ -210,13 +223,11 @@ class RefeeEnergyProvider(EnergyProvider):
         if delegated_order is None:
             return False
 
-        tron_client = self.tron_client or ConnectionManager.client()
-        try:
-            onetime_address_resources = tron_client.get_account_resource(receiver)
-        except Exception:
-            logger.exception("re:Fee on-chain resource check failed")
+        onetime_energy_available = self._get_available_energy(
+            tron_client, receiver, "post-delegation"
+        )
+        if onetime_energy_available is None:
             return False
-        onetime_energy_available = get_available_energy(onetime_address_resources)
         logger.info(
             f"re:Fee on-chain check: {receiver=} "
             f"{onetime_energy_available=} {energy_required=}"
@@ -303,15 +314,15 @@ class RefeeEnergyProvider(EnergyProvider):
                     timeout=self.REQUEST_TIMEOUT_SEC,
                 )
             except requests.RequestException:
-                logger.exception(f"re:Fee poll request failed for order {order_id}")
-                return None
+                logger.warning(f"re:Fee poll request failed for order {order_id}")
+                continue
 
             if response.status_code != 200:
                 logger.warning(
                     f"re:Fee poll for order {order_id} returned status "
                     f"{response.status_code}: {response.text}"
                 )
-                return None
+                continue
 
             try:
                 order = response.json()
@@ -337,6 +348,15 @@ class RefeeEnergyProvider(EnergyProvider):
     @staticmethod
     def _url(settings, path: str) -> str:
         return f"{settings.api_base_url.rstrip('/')}{path}"
+
+    @staticmethod
+    def _get_available_energy(tron_client, receiver: str, check_name: str) -> int | None:
+        try:
+            account_resource = tron_client.get_account_resource(receiver)
+        except Exception:
+            logger.exception(f"re:Fee {check_name} resource check failed")
+            return None
+        return get_available_energy(account_resource)
 
 
 def get_energy_provider(tron_client=None) -> EnergyProvider:

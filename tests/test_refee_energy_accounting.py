@@ -46,6 +46,15 @@ class FakeContract:
     functions = FakeContractFunctions()
 
 
+class FailedTransferContractFunctions(FakeContractFunctions):
+    def transfer(self, _dst, _amount):
+        return FailedTransferTx()
+
+
+class FailedTransferContract:
+    functions = FailedTransferContractFunctions()
+
+
 class FakeTx:
     txid = "txid"
     _raw_data = {}
@@ -69,6 +78,17 @@ class FakeTx:
         return {"receipt": {"result": "SUCCESS"}}
 
 
+class FailedTransferTx(FakeTx):
+    txid = "failed-token-txid"
+
+    def wait(self):
+        return {
+            "receipt": {"result": "OUT_OF_ENERGY"},
+            "result": "FAILED",
+            "resMessage": "out of energy",
+        }
+
+
 class FakeTronClient:
     def __init__(self, account_resource, delegated_resource_index=None):
         self.account_resource = account_resource
@@ -85,6 +105,22 @@ class FakeTronClient:
 
     def get_delegated_resource_account_index_v2(self, _address):
         return self.delegated_resource_index
+
+
+class SequencedResourceTronClient(FakeTronClient):
+    def __init__(self, account_resources):
+        self.account_resources = list(account_resources)
+        super().__init__(self.account_resources[0])
+
+    def get_account_resource(self, _address):
+        if len(self.account_resources) > 1:
+            return self.account_resources.pop(0)
+        return self.account_resources[0]
+
+
+class FailedTransferTronClient(FakeTronClient):
+    def get_contract(self, _contract_address):
+        return FailedTransferContract()
 
 
 class RecordingProvider:
@@ -215,7 +251,88 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
         self.assertEqual(args[1], 50_000)
         self.assertEqual(kwargs["minimum_energy_required"], 50_000)
 
+    def test_failed_trc20_receipt_is_not_treated_as_successful_sweep(self):
+        from app import tasks
+
+        provider = RecordingProvider(acquire_result=True)
+        client = FailedTransferTronClient(
+            {
+                "EnergyLimit": 0,
+                "EnergyUsed": 0,
+                "freeNetLimit": 600,
+                "freeNetUsed": 0,
+                "NetLimit": 0,
+                "NetUsed": 0,
+            }
+        )
+        restore = self.patch_tasks(tasks, client, provider)
+        try:
+            result = tasks.transfer_trc20_from.run(ONETIME, "USDT")
+        finally:
+            restore()
+
+        self.assertIsNone(result)
+        self.assertEqual(provider.release_calls, [])
+
     def test_refee_provider_orders_delta_but_verifies_total_available_energy(self):
+        from app.energy_provider import RefeeEnergyProvider
+
+        class FakeSettings:
+            energy_overprovision_factor = Decimal("1.05")
+            min_energy_order_amount = 30_000
+            rent_duration_label = "1h"
+            timeout_sec = 1
+            poll_interval_sec = 0.01
+
+        provider = RefeeEnergyProvider(
+            tron_client=SequencedResourceTronClient(
+                [
+                    {
+                        "EnergyLimit": 100_000,
+                        "EnergyUsed": 50_000,
+                        "freeNetLimit": 0,
+                        "freeNetUsed": 0,
+                        "NetLimit": 0,
+                        "NetUsed": 0,
+                    },
+                    {
+                        "EnergyLimit": 100_000,
+                        "EnergyUsed": 20_000,
+                        "freeNetLimit": 0,
+                        "freeNetUsed": 0,
+                        "NetLimit": 0,
+                        "NetUsed": 0,
+                    },
+                ]
+            )
+        )
+        created_orders = []
+        provider._create_order = lambda settings, receiver, amount: created_orders.append(
+            (receiver, amount)
+        ) or {"id": "order-1", "status": "pending"}
+        provider._wait_until_delegated = lambda settings, order_id, order: {
+            "id": order_id,
+            "status": "delegated",
+        }
+
+        original_config = __import__("app.energy_provider").energy_provider.config
+        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+            REFEE=FakeSettings()
+        )
+        try:
+            acquired = provider.acquire(
+                ONETIME,
+                30_000,
+                {},
+                minimum_energy_required=80_000,
+            )
+        finally:
+            __import__("app.energy_provider").energy_provider.config = original_config
+
+        self.assertTrue(acquired)
+        self.assertEqual(created_orders, [(ONETIME, 31_500)])
+
+    def test_refee_provider_skips_new_order_when_receiver_already_has_required_energy(self):
         from app.energy_provider import RefeeEnergyProvider
 
         class FakeSettings:
@@ -228,8 +345,8 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
         provider = RefeeEnergyProvider(
             tron_client=FakeTronClient(
                 {
-                    "EnergyLimit": 100_000,
-                    "EnergyUsed": 20_000,
+                    "EnergyLimit": 80_000,
+                    "EnergyUsed": 0,
                     "freeNetLimit": 0,
                     "freeNetUsed": 0,
                     "NetLimit": 0,
@@ -261,7 +378,7 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
             __import__("app.energy_provider").energy_provider.config = original_config
 
         self.assertTrue(acquired)
-        self.assertEqual(created_orders, [(ONETIME, 31_500)])
+        self.assertEqual(created_orders, [])
 
     def test_refee_provider_applies_live_api_minimum_energy_order_amount(self):
         from app.energy_provider import RefeeEnergyProvider
@@ -274,15 +391,25 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
             poll_interval_sec = 0.01
 
         provider = RefeeEnergyProvider(
-            tron_client=FakeTronClient(
-                {
-                    "EnergyLimit": 80_000,
-                    "EnergyUsed": 10_000,
-                    "freeNetLimit": 0,
-                    "freeNetUsed": 0,
-                    "NetLimit": 0,
-                    "NetUsed": 0,
-                }
+            tron_client=SequencedResourceTronClient(
+                [
+                    {
+                        "EnergyLimit": 80_000,
+                        "EnergyUsed": 20_000,
+                        "freeNetLimit": 0,
+                        "freeNetUsed": 0,
+                        "NetLimit": 0,
+                        "NetUsed": 0,
+                    },
+                    {
+                        "EnergyLimit": 80_000,
+                        "EnergyUsed": 10_000,
+                        "freeNetLimit": 0,
+                        "freeNetUsed": 0,
+                        "NetLimit": 0,
+                        "NetUsed": 0,
+                    },
+                ]
             )
         )
         created_orders = []
