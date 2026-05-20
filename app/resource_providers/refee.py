@@ -14,6 +14,7 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
     REQUEST_TIMEOUT_SEC = 10
     SUCCESS_STATUSES = {"delegated"}
     FAILURE_STATUSES = {"failed", "insufficient_funds", "canceled", "completed"}
+    FIXED_ENERGY_ORDER_TOLERANCE = 500
 
     def __init__(self, tron_client=None):
         self.tron_client = tron_client
@@ -37,14 +38,19 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
             else minimum_energy_required
         )
         fixed_order_amount = getattr(config, "REFEE_FIXED_ENERGY_ORDER_AMOUNT", 0)
-        energy_required = (
-            fixed_order_amount if fixed_order_amount > 0 else estimated_energy_required
-        )
+        if fixed_order_amount > 0:
+            energy_required = max(
+                fixed_order_amount - self.FIXED_ENERGY_ORDER_TOLERANCE,
+                0,
+            )
+        else:
+            energy_required = estimated_energy_required
         if fixed_order_amount > 0:
             logger.info(
                 "Using fixed re:Fee energy order amount: "
                 f"{fixed_order_amount} energy; "
-                f"estimated requirement was {estimated_energy_required}"
+                f"estimated requirement was {estimated_energy_required}; "
+                f"post-check threshold is {energy_required}"
             )
         tron_client = self.tron_client or ConnectionManager.client()
         onetime_energy_available = self._get_available_energy(

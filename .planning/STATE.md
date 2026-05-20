@@ -75,6 +75,7 @@ This GSD project (`tron-shkeeper/.planning/`) is the implementation site. Archit
 
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
+| 260520-n5i | Fix duplicate re:Fee fixed energy rental when 65k order settles slightly below requested energy | 2026-05-20 | pending | [260520-n5i-re-fee-energy-65000-energy-trc20-transfe](./quick/260520-n5i-re-fee-energy-65000-energy-trc20-transfe/) |
 | 20260501-153648 | Fix validated reFee sweep review findings: receipt validation, duplicate rental retry risk, and api_base_url HTTPS validation | 2026-05-01 | fd9f173 | [20260501-153648-refee-review-fixes](./quick/20260501-153648-refee-review-fixes/) |
 
 ## Next action
