@@ -149,6 +149,54 @@ class ProfeeXBandwidthProviderTests(unittest.TestCase):
 
         self.assertEqual(client.resource_calls, ["TADDR", "TADDR"])
 
+    def test_minimal_create_response_polls_status_before_rechecking_bandwidth(self):
+        from app.resource_providers import profeex
+        from app.resource_providers.profeex import ProfeeXBandwidthProvider
+
+        client = SequencedBandwidthTronClient(
+            [
+                {"freeNetLimit": 600, "freeNetUsed": 600, "NetLimit": 0, "NetUsed": 0},
+                {"freeNetLimit": 600, "freeNetUsed": 600, "NetLimit": 350, "NetUsed": 0},
+            ]
+        )
+        provider = ProfeeXBandwidthProvider(tron_client=client)
+        posts = []
+        gets = []
+
+        def fake_post(url, params, headers, timeout):
+            posts.append((url, params, headers, timeout))
+            return MockJsonResponse(202, {"task_id": "task-1"})
+
+        def fake_get(url, headers, timeout):
+            gets.append((url, headers, timeout))
+            return MockJsonResponse(200, {"task_id": "task-1", "status": "ACTIVE"})
+
+        original_post = profeex.requests.post
+        original_get = profeex.requests.get
+        restore_config = self.patch_config(profeex)
+        try:
+            profeex.requests.post = fake_post
+            profeex.requests.get = fake_get
+            acquired = provider.acquire_bandwidth("TADDR", 350)
+        finally:
+            profeex.requests.post = original_post
+            profeex.requests.get = original_get
+            restore_config()
+
+        self.assertTrue(acquired)
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(
+            gets,
+            [
+                (
+                    "https://api.profeex.test/api/v1/delegation/status/task-1",
+                    {"X-API-Key": "profeex-secret"},
+                    gets[0][2],
+                )
+            ],
+        )
+        self.assertEqual(client.resource_calls, ["TADDR", "TADDR"])
+
     def test_invalid_status_returns_false_without_polling(self):
         from app.resource_providers import profeex
         from app.resource_providers.profeex import ProfeeXBandwidthProvider

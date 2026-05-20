@@ -44,9 +44,12 @@ class ProfeeXBandwidthProvider:
             return False
 
         task_id = order.get("task_id")
-        if not task_id:
+        if not isinstance(task_id, str) or not task_id:
             logger.warning(f"ProfeeX bandwidth order response has no task_id: {order}")
             return False
+
+        if "status" not in order:
+            order = {**order, "status": "PENDING"}
 
         active_order = self._wait_until_active(settings, task_id, order)
         if active_order is None:
