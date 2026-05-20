@@ -55,7 +55,7 @@ class FakeProvider:
         self.acquire_calls = 0
         self.acquire_bandwidth_calls = []
 
-    def acquire(self, *_args, **_kwargs):
+    def acquire_energy(self, *_args, **_kwargs):
         self.acquire_calls += 1
         return False
 
@@ -99,9 +99,18 @@ class FakeEnergyProviderWithoutBandwidth:
     def __init__(self):
         self.acquire_calls = 0
 
-    def acquire(self, *_args, **_kwargs):
+    def acquire_energy(self, *_args, **_kwargs):
         self.acquire_calls += 1
         return False
+
+
+class NotImplementedBandwidthProvider:
+    def __init__(self):
+        self.acquire_bandwidth_calls = []
+
+    def acquire_bandwidth(self, receiver, bandwidth_required):
+        self.acquire_bandwidth_calls.append((receiver, bandwidth_required))
+        raise NotImplementedError("not implemented yet")
 
 
 class RefeeBandwidthGuardTests(unittest.TestCase):
@@ -117,7 +126,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
         original_connection_manager = tasks.ConnectionManager
         original_get_key = tasks.get_key
         original_get_energy_provider = tasks.get_energy_provider
-        original_refee_energy_provider = tasks.RefeeEnergyProvider
+        original_get_bandwidth_provider = tasks.get_bandwidth_provider
         try:
             tasks.config = FakeConfig()
             tasks.ConnectionManager = SimpleNamespace(client=lambda: client)
@@ -131,7 +140,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
 
             tasks.get_key = fake_get_key
             tasks.get_energy_provider = lambda tron_client=None: provider
-            tasks.RefeeEnergyProvider = lambda tron_client=None: provider
+            tasks.get_bandwidth_provider = lambda tron_client=None: provider
 
             result = tasks.transfer_trc20_from.run(onetime, "USDT")
         finally:
@@ -139,7 +148,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
             tasks.ConnectionManager = original_connection_manager
             tasks.get_key = original_get_key
             tasks.get_energy_provider = original_get_energy_provider
-            tasks.RefeeEnergyProvider = original_refee_energy_provider
+            tasks.get_bandwidth_provider = original_get_bandwidth_provider
 
         self.assertIsNone(result)
         self.assertEqual(
@@ -163,7 +172,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
         original_get_key = tasks.get_key
         original_get_energy_delegator = tasks.get_energy_delegator
         original_get_energy_provider = tasks.get_energy_provider
-        original_refee_energy_provider = getattr(tasks, "RefeeEnergyProvider", None)
+        original_get_bandwidth_provider = tasks.get_bandwidth_provider
         try:
             tasks.config = StakingEnergyRefeeBandwidthConfig()
             tasks.ConnectionManager = SimpleNamespace(client=lambda: client)
@@ -178,7 +187,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
             tasks.get_key = fake_get_key
             tasks.get_energy_delegator = lambda: (object(), "TDELEGATOR")
             tasks.get_energy_provider = lambda tron_client=None: energy_provider
-            tasks.RefeeEnergyProvider = lambda tron_client=None: bandwidth_provider
+            tasks.get_bandwidth_provider = lambda tron_client=None: bandwidth_provider
 
             result = tasks.transfer_trc20_from.run(onetime, "USDT")
         finally:
@@ -187,10 +196,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
             tasks.get_key = original_get_key
             tasks.get_energy_delegator = original_get_energy_delegator
             tasks.get_energy_provider = original_get_energy_provider
-            if original_refee_energy_provider is None:
-                delattr(tasks, "RefeeEnergyProvider")
-            else:
-                tasks.RefeeEnergyProvider = original_refee_energy_provider
+            tasks.get_bandwidth_provider = original_get_bandwidth_provider
 
         self.assertIsNone(result)
         self.assertEqual(
@@ -212,6 +218,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
         original_connection_manager = tasks.ConnectionManager
         original_get_key = tasks.get_key
         original_get_energy_provider = tasks.get_energy_provider
+        original_get_bandwidth_provider = tasks.get_bandwidth_provider
         try:
             tasks.config = DisabledBandwidthRentConfig()
             tasks.ConnectionManager = SimpleNamespace(client=lambda: client)
@@ -225,6 +232,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
 
             tasks.get_key = fake_get_key
             tasks.get_energy_provider = lambda tron_client=None: provider
+            tasks.get_bandwidth_provider = lambda tron_client=None: None
 
             result = tasks.transfer_trc20_from.run(onetime, "USDT")
         finally:
@@ -232,6 +240,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
             tasks.ConnectionManager = original_connection_manager
             tasks.get_key = original_get_key
             tasks.get_energy_provider = original_get_energy_provider
+            tasks.get_bandwidth_provider = original_get_bandwidth_provider
 
         self.assertIsNone(result)
         self.assertEqual(provider.acquire_bandwidth_calls, [])
@@ -250,6 +259,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
         original_connection_manager = tasks.ConnectionManager
         original_get_key = tasks.get_key
         original_get_energy_provider = tasks.get_energy_provider
+        original_get_bandwidth_provider = tasks.get_bandwidth_provider
         try:
             tasks.config = FakeConfig()
             tasks.ConnectionManager = SimpleNamespace(client=lambda: client)
@@ -263,6 +273,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
 
             tasks.get_key = fake_get_key
             tasks.get_energy_provider = lambda tron_client=None: provider
+            tasks.get_bandwidth_provider = lambda tron_client=None: provider
 
             result = tasks.transfer_trc20_from.run(onetime, "USDT")
         finally:
@@ -270,14 +281,60 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
             tasks.ConnectionManager = original_connection_manager
             tasks.get_key = original_get_key
             tasks.get_energy_provider = original_get_energy_provider
+            tasks.get_bandwidth_provider = original_get_bandwidth_provider
 
         self.assertIsNone(result)
         self.assertEqual(provider.acquire_bandwidth_calls, [])
         self.assertEqual(provider.acquire_calls, 1)
         self.assertEqual(client.energy_estimate_calls, 1)
 
+    def test_not_implemented_bandwidth_provider_stops_before_energy_provisioning(self):
+        from app import tasks
+        from app.schemas import KeyType
+
+        fee_deposit = "TRfonfrf1AqFzXqJTpad8Tz4EzvCBhZe5k"
+        onetime = "TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7"
+        client = FakeTronClient()
+        energy_provider = FakeProvider()
+        bandwidth_provider = NotImplementedBandwidthProvider()
+        original_config = tasks.config
+        original_connection_manager = tasks.ConnectionManager
+        original_get_key = tasks.get_key
+        original_get_energy_provider = tasks.get_energy_provider
+        original_get_bandwidth_provider = tasks.get_bandwidth_provider
+        try:
+            tasks.config = FakeConfig()
+            tasks.ConnectionManager = SimpleNamespace(client=lambda: client)
+
+            def fake_get_key(key_type, pub=None):
+                if key_type == KeyType.fee_deposit:
+                    return object(), fee_deposit
+                if key_type == KeyType.onetime:
+                    return object(), pub
+                raise AssertionError(f"unexpected key type {key_type}")
+
+            tasks.get_key = fake_get_key
+            tasks.get_energy_provider = lambda tron_client=None: energy_provider
+            tasks.get_bandwidth_provider = lambda tron_client=None: bandwidth_provider
+
+            result = tasks.transfer_trc20_from.run(onetime, "USDT")
+        finally:
+            tasks.config = original_config
+            tasks.ConnectionManager = original_connection_manager
+            tasks.get_key = original_get_key
+            tasks.get_energy_provider = original_get_energy_provider
+            tasks.get_bandwidth_provider = original_get_bandwidth_provider
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            bandwidth_provider.acquire_bandwidth_calls,
+            [(onetime, FakeConfig.BANDWIDTH_PER_TRC20_TRANSFER_CALL)],
+        )
+        self.assertEqual(energy_provider.acquire_calls, 0)
+        self.assertEqual(client.energy_estimate_calls, 0)
+
     def test_refee_provider_rents_minimum_bandwidth_order(self):
-        from app.energy_provider import RefeeEnergyProvider
+        from app.resource_providers.refee import RefeeProvider
 
         class FakeSettings:
             min_bandwidth_order_amount = 1_000
@@ -308,7 +365,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
                     return self.resources.pop(0)
                 return self.resources[0]
 
-        provider = RefeeEnergyProvider(tron_client=SequencedBandwidthTronClient())
+        provider = RefeeProvider(tron_client=SequencedBandwidthTronClient())
         created_orders = []
 
         def fake_create_order(
@@ -327,8 +384,8 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
             "status": "delegated",
         }
 
-        original_config = __import__("app.energy_provider").energy_provider.config
-        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+        original_config = __import__("app.resource_providers.refee", fromlist=["config"]).config
+        __import__("app.resource_providers.refee", fromlist=["config"]).config = SimpleNamespace(
             REFEE=FakeSettings()
         )
         try:
@@ -337,7 +394,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
                 346,
             )
         finally:
-            __import__("app.energy_provider").energy_provider.config = original_config
+            __import__("app.resource_providers.refee", fromlist=["config"]).config = original_config
 
         self.assertTrue(acquired)
         self.assertEqual(
@@ -346,7 +403,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
         )
 
     def test_refee_provider_uses_separate_bandwidth_duration(self):
-        from app.energy_provider import RefeeEnergyProvider
+        from app.resource_providers.refee import RefeeProvider
 
         class FakeSettings:
             min_bandwidth_order_amount = 1_000
@@ -377,7 +434,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
                     return self.resources.pop(0)
                 return self.resources[0]
 
-        provider = RefeeEnergyProvider(tron_client=SequencedBandwidthTronClient())
+        provider = RefeeProvider(tron_client=SequencedBandwidthTronClient())
         created_orders = []
 
         def fake_create_order(
@@ -396,8 +453,8 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
             "status": "delegated",
         }
 
-        original_config = __import__("app.energy_provider").energy_provider.config
-        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+        original_config = __import__("app.resource_providers.refee", fromlist=["config"]).config
+        __import__("app.resource_providers.refee", fromlist=["config"]).config = SimpleNamespace(
             REFEE=FakeSettings()
         )
         try:
@@ -406,7 +463,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
                 346,
             )
         finally:
-            __import__("app.energy_provider").energy_provider.config = original_config
+            __import__("app.resource_providers.refee", fromlist=["config"]).config = original_config
 
         self.assertTrue(acquired)
         self.assertEqual(

@@ -5,7 +5,6 @@ import unittest
 from pydantic import ValidationError
 from requests import RequestException
 
-from app import energy_provider
 from app.refee import RefeeConfig
 from app.utils import has_free_bw
 
@@ -91,31 +90,35 @@ class Phase2ReviewFixTests(unittest.TestCase):
             )
 
     def test_refee_provider_uses_success_status_set(self):
-        provider = energy_provider.RefeeEnergyProvider()
+        from app.resource_providers import refee
+
+        provider = refee.RefeeProvider()
         provider.SUCCESS_STATUSES = {"custom-success"}
 
-        original_get = energy_provider.requests.get
-        energy_provider.requests.get = MockRequestGet()
+        original_get = refee.requests.get
+        refee.requests.get = MockRequestGet()
         try:
             order = provider._wait_until_delegated(
                 RefeeSettings(), "order-1", {"id": "order-1", "status": "custom-success"}
             )
         finally:
-            energy_provider.requests.get = original_get
+            refee.requests.get = original_get
 
         self.assertEqual(order, {"id": "order-1", "status": "custom-success"})
 
     def test_refee_poll_continues_after_transient_request_failure(self):
-        provider = energy_provider.RefeeEnergyProvider()
+        from app.resource_providers import refee
 
-        original_get = energy_provider.requests.get
-        energy_provider.requests.get = MockTransientRequestGet()
+        provider = refee.RefeeProvider()
+
+        original_get = refee.requests.get
+        refee.requests.get = MockTransientRequestGet()
         try:
             order = provider._wait_until_delegated(
                 RefeeSettings(), "order-1", {"id": "order-1", "status": "pending"}
             )
         finally:
-            energy_provider.requests.get = original_get
+            refee.requests.get = original_get
 
         self.assertEqual(order, {"id": "order-1", "status": "delegated"})
 

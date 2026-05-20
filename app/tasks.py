@@ -34,7 +34,7 @@ from .utils import (
     skip_if_running,
 )
 from .connection_manager import ConnectionManager
-from .energy_provider import RefeeEnergyProvider, get_energy_provider
+from .energy_provider import get_bandwidth_provider, get_energy_provider
 from .logging import logger
 from .wallet_encryption import wallet_encryption
 
@@ -273,32 +273,32 @@ def transfer_trc20_from(onetime_acc, symbol):
             config.BANDWIDTH_PER_TRC20_TRANSFER_CALL,
             tron_client=tron_client,
         ):
-            if config.BANDWIDTH_PROVIDER == "disabled":
+            bandwidth_provider = get_bandwidth_provider(tron_client=tron_client)
+            if bandwidth_provider is None:
                 logger.warning(
-                    "One-time account has no bandwidth and bandwidth rental is "
-                    "disabled. Terminating transfer before energy provisioning."
+                    "One-time account has no bandwidth and no bandwidth provider is "
+                    "configured. Terminating transfer before energy provisioning."
                 )
                 return
-            if config.BANDWIDTH_PROVIDER == "refee":
-                logger.info(
-                    "One-time account has no bandwidth. "
-                    "Requesting re:Fee bandwidth before energy provisioning."
-                )
-                bandwidth_provider = RefeeEnergyProvider(tron_client=tron_client)
-                if not bandwidth_provider.acquire_bandwidth(
+            logger.info(
+                "One-time account has no bandwidth. "
+                f"Requesting {config.BANDWIDTH_PROVIDER} bandwidth before energy provisioning."
+            )
+            try:
+                bandwidth_acquired = bandwidth_provider.acquire_bandwidth(
                     onetime_publ_key,
                     config.BANDWIDTH_PER_TRC20_TRANSFER_CALL,
-                ):
-                    logger.warning(
-                        "One-time account has no bandwidth after re:Fee rental. "
-                        "Terminating transfer before energy provisioning."
-                    )
-                    return
-            elif config.BANDWIDTH_PROVIDER == "profeex":
+                )
+            except NotImplementedError:
                 logger.warning(
-                    "One-time account has no bandwidth and ProfeeX bandwidth "
-                    "provider is not wired until bandwidth provider factory "
-                    "integration. Terminating transfer before energy provisioning."
+                    f"Bandwidth provider {config.BANDWIDTH_PROVIDER} is not implemented. "
+                    "Terminating transfer before energy provisioning."
+                )
+                return
+            if not bandwidth_acquired:
+                logger.warning(
+                    "One-time account has no bandwidth after bandwidth rental. "
+                    "Terminating transfer before energy provisioning."
                 )
                 return
 
@@ -374,7 +374,7 @@ def transfer_trc20_from(onetime_acc, symbol):
                 logger.info(
                     f"Requesting energy provider to provision {energy_to_provision} energy on {onetime_publ_key}"
                 )
-                if not provider.acquire(
+                if not provider.acquire_energy(
                     onetime_publ_key,
                     energy_to_provision,
                     onetime_address_resources,
@@ -449,7 +449,7 @@ def transfer_trc20_from(onetime_acc, symbol):
     )
 
     if use_energy_provider:
-        provider.release(onetime_publ_key)
+        provider.release_energy(onetime_publ_key)
 
     return {"tx_trx_res": tx_trx_res, "tx_token": tx_token_res}
 

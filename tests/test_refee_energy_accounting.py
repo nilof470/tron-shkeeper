@@ -130,11 +130,11 @@ class RecordingProvider:
         self.acquire_calls = []
         self.release_calls = []
 
-    def acquire(self, *args, **kwargs):
+    def acquire_energy(self, *args, **kwargs):
         self.acquire_calls.append((args, kwargs))
         return self.acquire_result
 
-    def release(self, receiver):
+    def release_energy(self, receiver):
         self.release_calls.append(receiver)
 
 
@@ -316,19 +316,19 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
             "status": "delegated",
         }
 
-        original_config = __import__("app.energy_provider").energy_provider.config
-        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+        original_config = __import__("app.resource_providers.refee", fromlist=["config"]).config
+        __import__("app.resource_providers.refee", fromlist=["config"]).config = SimpleNamespace(
             REFEE=FakeSettings()
         )
         try:
-            acquired = provider.acquire(
+            acquired = provider.acquire_energy(
                 ONETIME,
                 30_000,
                 {},
                 minimum_energy_required=80_000,
             )
         finally:
-            __import__("app.energy_provider").energy_provider.config = original_config
+            __import__("app.resource_providers.refee", fromlist=["config"]).config = original_config
 
         self.assertTrue(acquired)
         self.assertEqual(created_orders, [(ONETIME, 31_500)])
@@ -374,20 +374,20 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
             "status": "delegated",
         }
 
-        original_config = __import__("app.energy_provider").energy_provider.config
-        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+        original_config = __import__("app.resource_providers.refee", fromlist=["config"]).config
+        __import__("app.resource_providers.refee", fromlist=["config"]).config = SimpleNamespace(
             REFEE=FakeSettings(),
             REFEE_FIXED_ENERGY_ORDER_AMOUNT=65_000,
         )
         try:
-            acquired = provider.acquire(
+            acquired = provider.acquire_energy(
                 ONETIME,
                 72_321,
                 {},
                 minimum_energy_required=72_321,
             )
         finally:
-            __import__("app.energy_provider").energy_provider.config = original_config
+            __import__("app.resource_providers.refee", fromlist=["config"]).config = original_config
 
         self.assertTrue(acquired)
         self.assertEqual(created_orders, [(ONETIME, 65_000)])
@@ -433,20 +433,20 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
             "status": "delegated",
         }
 
-        original_config = __import__("app.energy_provider").energy_provider.config
-        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+        original_config = __import__("app.resource_providers.refee", fromlist=["config"]).config
+        __import__("app.resource_providers.refee", fromlist=["config"]).config = SimpleNamespace(
             REFEE=FakeSettings(),
             REFEE_FIXED_ENERGY_ORDER_AMOUNT=0,
         )
         try:
-            acquired = provider.acquire(
+            acquired = provider.acquire_energy(
                 ONETIME,
                 30_000,
                 {},
                 minimum_energy_required=80_000,
             )
         finally:
-            __import__("app.energy_provider").energy_provider.config = original_config
+            __import__("app.resource_providers.refee", fromlist=["config"]).config = original_config
 
         self.assertTrue(acquired)
         self.assertEqual(created_orders, [(ONETIME, 31_500)])
@@ -478,20 +478,20 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
             (receiver, amount)
         ) or {"id": "order-1", "status": "pending"}
 
-        original_config = __import__("app.energy_provider").energy_provider.config
-        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+        original_config = __import__("app.resource_providers.refee", fromlist=["config"]).config
+        __import__("app.resource_providers.refee", fromlist=["config"]).config = SimpleNamespace(
             REFEE=FakeSettings(),
             REFEE_FIXED_ENERGY_ORDER_AMOUNT=65_000,
         )
         try:
-            acquired = provider.acquire(
+            acquired = provider.acquire_energy(
                 ONETIME,
                 72_321,
                 {},
                 minimum_energy_required=72_321,
             )
         finally:
-            __import__("app.energy_provider").energy_provider.config = original_config
+            __import__("app.resource_providers.refee", fromlist=["config"]).config = original_config
 
         self.assertTrue(acquired)
         self.assertEqual(created_orders, [])
@@ -527,19 +527,19 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
             "status": "delegated",
         }
 
-        original_config = __import__("app.energy_provider").energy_provider.config
-        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+        original_config = __import__("app.resource_providers.refee", fromlist=["config"]).config
+        __import__("app.resource_providers.refee", fromlist=["config"]).config = SimpleNamespace(
             REFEE=FakeSettings()
         )
         try:
-            acquired = provider.acquire(
+            acquired = provider.acquire_energy(
                 ONETIME,
                 30_000,
                 {},
                 minimum_energy_required=80_000,
             )
         finally:
-            __import__("app.energy_provider").energy_provider.config = original_config
+            __import__("app.resource_providers.refee", fromlist=["config"]).config = original_config
 
         self.assertTrue(acquired)
         self.assertEqual(created_orders, [])
@@ -585,19 +585,19 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
             "status": "delegated",
         }
 
-        original_config = __import__("app.energy_provider").energy_provider.config
-        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+        original_config = __import__("app.resource_providers.refee", fromlist=["config"]).config
+        __import__("app.resource_providers.refee", fromlist=["config"]).config = SimpleNamespace(
             REFEE=FakeSettings()
         )
         try:
-            acquired = provider.acquire(
+            acquired = provider.acquire_energy(
                 ONETIME,
                 100_000,
                 {},
                 minimum_energy_required=100_000,
             )
         finally:
-            __import__("app.energy_provider").energy_provider.config = original_config
+            __import__("app.resource_providers.refee", fromlist=["config"]).config = original_config
 
         self.assertTrue(acquired)
         self.assertEqual(created_orders, [(ONETIME, 30_000)])
@@ -643,19 +643,19 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
             "status": "delegated",
         }
 
-        original_config = __import__("app.energy_provider").energy_provider.config
-        __import__("app.energy_provider").energy_provider.config = SimpleNamespace(
+        original_config = __import__("app.resource_providers.refee", fromlist=["config"]).config
+        __import__("app.resource_providers.refee", fromlist=["config"]).config = SimpleNamespace(
             REFEE=FakeSettings()
         )
         try:
-            acquired = provider.acquire(
+            acquired = provider.acquire_energy(
                 ONETIME,
                 10_000,
                 {},
                 minimum_energy_required=70_000,
             )
         finally:
-            __import__("app.energy_provider").energy_provider.config = original_config
+            __import__("app.resource_providers.refee", fromlist=["config"]).config = original_config
 
         self.assertTrue(acquired)
         self.assertEqual(created_orders, [(ONETIME, 30_000)])
