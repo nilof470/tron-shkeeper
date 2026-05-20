@@ -6,6 +6,7 @@ from pydantic import Field, Json, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .custom.aml.schemas import ExternalDrain
+from .profeex import ProfeeXConfig
 from .refee import RefeeConfig
 from .schemas import TronFullnode, TronNetwork, Token, TronSymbol, SrVote
 from .exceptions import UnknownToken
@@ -71,8 +72,10 @@ class Settings(BaseSettings):
     ENERGY_DELEGATION_MODE_ENERGY_DELEGATION_FACTOR: Decimal = Decimal("1.0")
     ENERGY_DELEGATION_MODE_SEPARATE_BALANCE_AND_ENERGY_ACCOUNTS: bool = False
     ENERGY_DELEGATION_MODE_ENERGY_ACCOUNT_PUB_KEY: str | None = None
-    ENERGY_SOURCE: Literal["staking", "refee"] = "staking"
+    ENERGY_PROVIDER: Literal["staking", "refee"] = "staking"
+    BANDWIDTH_PROVIDER: Literal["disabled", "refee", "profeex"] = "disabled"
     REFEE: Json[RefeeConfig] | None = None
+    PROFEEX: Json[ProfeeXConfig] | None = None
     REFEE_FIXED_ENERGY_ORDER_AMOUNT: int = Field(65_000, ge=0)
     # Voting
     SR_VOTING: bool = False
@@ -170,11 +173,17 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
-    def validate_refee_config_state(self):
-        if self.ENERGY_SOURCE == "refee" and self.REFEE is None:
-            raise ValueError("REFEE must be configured when ENERGY_SOURCE='refee'")
+    def validate_resource_provider_config_state(self):
+        if self.ENERGY_PROVIDER == "refee" and self.REFEE is None:
+            raise ValueError("REFEE must be configured when ENERGY_PROVIDER='refee'")
+        if self.BANDWIDTH_PROVIDER == "refee" and self.REFEE is None:
+            raise ValueError("REFEE must be configured when BANDWIDTH_PROVIDER='refee'")
+        if self.BANDWIDTH_PROVIDER == "profeex" and self.PROFEEX is None:
+            raise ValueError(
+                "PROFEEX must be configured when BANDWIDTH_PROVIDER='profeex'"
+            )
         if (
-            self.ENERGY_SOURCE == "refee"
+            self.ENERGY_PROVIDER == "refee"
             and self.REFEE is not None
             and self.REFEE_FIXED_ENERGY_ORDER_AMOUNT > 0
             and self.REFEE_FIXED_ENERGY_ORDER_AMOUNT < self.REFEE.min_energy_order_amount

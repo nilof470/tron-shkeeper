@@ -24,13 +24,15 @@ gunicorn run:server
 celery -A celery_worker.celery worker -E --loglevel=info
 ```
 
-## Energy Source
+## Resource Providers
 
-TRC20 sweeps need TRON energy. The sidecar supports two energy sources:
+TRC20 sweeps need TRON energy. The sidecar supports two energy providers:
 
 ```bash
-ENERGY_SOURCE=staking  # default
-ENERGY_SOURCE=refee
+ENERGY_PROVIDER=staking  # default
+BANDWIDTH_PROVIDER=disabled  # default
+ENERGY_PROVIDER=refee
+BANDWIDTH_PROVIDER=refee
 ```
 
 `staking` preserves the legacy freeze/delegate resource flow.
@@ -39,12 +41,17 @@ ENERGY_SOURCE=refee
 `POST /api/rent_resource/orders`, waits for `status="delegated"`, verifies the
 on-chain energy on the onetime address, then broadcasts the TRC20 transfer.
 
+`BANDWIDTH_PROVIDER` controls bandwidth rental independently. Allowed values are
+`disabled`, `refee`, and `profeex`; ProfeeX configuration is available before
+the provider factory integration is wired.
+
 ## re:Fee Setup
 
-Set `ENERGY_SOURCE=refee` and provide `REFEE` as JSON:
+Set `ENERGY_PROVIDER=refee` and provide `REFEE` as JSON:
 
 ```bash
-export ENERGY_SOURCE=refee
+export ENERGY_PROVIDER=refee
+export BANDWIDTH_PROVIDER=disabled
 export REFEE='{"api_key":"YOUR_REFEE_API_KEY","rent_duration_label":"1h"}'
 export REFEE_FIXED_ENERGY_ORDER_AMOUNT=65000
 ```
@@ -56,15 +63,17 @@ Optional `REFEE` fields:
   "api_base_url": "https://api.refee.bot/v2",
   "api_key": "YOUR_REFEE_API_KEY",
   "rent_duration_label": "1h",
+  "bandwidth_rent_duration_label": "1h",
   "energy_overprovision_factor": "1.05",
   "min_energy_order_amount": 30000,
+  "min_bandwidth_order_amount": 1000,
   "poll_interval_sec": 2.0,
   "timeout_sec": 60
 }
 ```
 
 Allowed `rent_duration_label` values are `1h`, `1d`, `3d`, `7d`, and `14d`.
-`api_key` is required and must be non-empty. When `ENERGY_SOURCE=refee`,
+`api_key` is required and must be non-empty. When `ENERGY_PROVIDER=refee`,
 startup fails if `REFEE` is missing.
 
 `min_energy_order_amount` defaults to `30000`, matching the live re:Fee energy
@@ -77,10 +86,8 @@ dynamic sizing from the fullnode estimate and `energy_overprovision_factor`.
 
 ## Sweep Prerequisites
 
-re:Fee rents **energy only**. A TRC20 sweep still needs bandwidth from the
-onetime sender address.
-
-Before creating a re:Fee order, `transfer_trc20_from` checks:
+A TRC20 sweep needs bandwidth from the onetime sender address before energy is
+provisioned. `transfer_trc20_from` checks:
 
 - token balance is above the token threshold, for example
   `USDT_MIN_TRANSFER_THRESHOLD`;
@@ -88,9 +95,16 @@ Before creating a re:Fee order, `transfer_trc20_from` checks:
 - the onetime account has enough free or delegated bandwidth for the TRC20
   transaction.
 
-If bandwidth is not available, the sweep stops before renting re:Fee energy.
-The USDT remains on the onetime address and the next block-scanner or periodic
-balance scan can retry after bandwidth recovers or is delegated manually.
+If bandwidth is not currently available:
+
+- `BANDWIDTH_PROVIDER=disabled` uses only wallet bandwidth that is already
+  available. The sweep stops before energy provisioning, leaving funds on the
+  onetime address for the next block-scanner or periodic balance scan to retry
+  after TRON daily bandwidth recovery or manual delegation.
+- `BANDWIDTH_PROVIDER=refee` rents re:Fee bandwidth before energy provisioning,
+  then continues to energy provisioning after bandwidth is available.
+- `BANDWIDTH_PROVIDER=profeex` is accepted as a configuration value, but full
+  ProfeeX bandwidth provider integration is completed in later tasks.
 
 The default periodic rescan interval is:
 
@@ -138,7 +152,8 @@ shape for a `values.yaml` override:
 
 ```yaml
 env:
-  ENERGY_SOURCE: refee
+  ENERGY_PROVIDER: refee
+  BANDWIDTH_PROVIDER: refee
   REFEE: '{"api_key":"YOUR_REFEE_API_KEY","rent_duration_label":"1h"}'
   REFEE_FIXED_ENERGY_ORDER_AMOUNT: "65000"
   ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT: "false"
@@ -149,7 +164,9 @@ If the chart models environment variables as a list, use the same keys:
 
 ```yaml
 env:
-  - name: ENERGY_SOURCE
+  - name: ENERGY_PROVIDER
+    value: refee
+  - name: BANDWIDTH_PROVIDER
     value: refee
   - name: REFEE
     value: '{"api_key":"YOUR_REFEE_API_KEY","rent_duration_label":"1h"}'

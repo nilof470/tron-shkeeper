@@ -8,7 +8,8 @@ ONETIME = "TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7"
 
 
 class FakeConfig:
-    ENERGY_SOURCE = "refee"
+    ENERGY_PROVIDER = "refee"
+    BANDWIDTH_PROVIDER = "refee"
     ENERGY_DELEGATION_MODE = False
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT = False
     ENERGY_DELEGATION_MODE_ALLOW_ADDITIONAL_ENERGY_DELEGATION = False
@@ -23,7 +24,7 @@ class FakeConfig:
 
 
 class FakeStakingConfig(FakeConfig):
-    ENERGY_SOURCE = "staking"
+    ENERGY_PROVIDER = "staking"
     ENERGY_DELEGATION_MODE = True
     BANDWIDTH_PER_DELEGE_CALL = 1
     BANDWIDTH_PER_UNDELEGATE_CALL = 1

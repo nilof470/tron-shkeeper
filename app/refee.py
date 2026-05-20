@@ -9,8 +9,10 @@ class RefeeConfig(BaseModel):
     api_base_url: str = Field(default="https://api.refee.bot/v2", min_length=1)
     api_key: SecretStr
     rent_duration_label: Literal["1h", "1d", "3d", "7d", "14d"] = "1h"
+    bandwidth_rent_duration_label: Literal["1h"] = "1h"
     energy_overprovision_factor: Decimal = Field(default=Decimal("1.05"), gt=0)
     min_energy_order_amount: int = Field(default=30_000, gt=0)
+    min_bandwidth_order_amount: int = Field(default=1_000, gt=0)
     poll_interval_sec: float = Field(default=2.0, gt=0)
     timeout_sec: int = Field(default=60, gt=0)
 

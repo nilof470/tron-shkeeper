@@ -9,7 +9,7 @@ import requests
 from .config import config
 from .connection_manager import ConnectionManager
 from .logging import logger
-from .utils import get_available_energy, get_energy_delegator
+from .utils import get_available_energy, get_energy_delegator, has_free_bw
 
 
 class EnergyProvider(ABC):
@@ -262,13 +262,75 @@ class RefeeEnergyProvider(EnergyProvider):
             "Skipping undelegate."
         )
 
-    def _create_order(self, settings, receiver: str, amount: int) -> dict | None:
+    def acquire_bandwidth(self, receiver: str, bandwidth_required: int) -> bool:
+        settings = config.REFEE
+        if settings is None:
+            logger.warning("REFEE config is missing. Terminating transfer.")
+            return False
+
+        tron_client = self.tron_client or ConnectionManager.client()
+        if has_free_bw(receiver, bandwidth_required, tron_client=tron_client):
+            logger.info(
+                f"re:Fee bandwidth order not needed for {receiver}: "
+                f"{bandwidth_required=} already available"
+            )
+            return True
+
+        min_bandwidth_order_amount = getattr(
+            settings, "min_bandwidth_order_amount", bandwidth_required
+        )
+        amount = max(bandwidth_required, min_bandwidth_order_amount)
+        duration_label = getattr(
+            settings, "bandwidth_rent_duration_label", settings.rent_duration_label
+        )
+        logger.info(
+            f"Requesting re:Fee bandwidth rental for {receiver}: "
+            f"{amount} bandwidth for {duration_label}"
+        )
+
+        order = self._create_order(
+            settings,
+            receiver,
+            amount,
+            resource="bandwidth",
+            duration_label=duration_label,
+        )
+        if order is None:
+            return False
+
+        order_id = order.get("id")
+        if not order_id:
+            logger.warning(f"re:Fee bandwidth order response has no id field: {order}")
+            return False
+
+        delegated_order = self._wait_until_delegated(settings, order_id, order)
+        if delegated_order is None:
+            return False
+
+        if not has_free_bw(receiver, bandwidth_required, tron_client=tron_client):
+            logger.warning(
+                "Onetime account has not enough bandwidth after re:Fee delegation. "
+                "Terminating transfer."
+            )
+            return False
+
+        logger.info(f"re:Fee bandwidth successfully delegated: {delegated_order}")
+        return True
+
+    def _create_order(
+        self,
+        settings,
+        receiver: str,
+        amount: int,
+        resource: str = "energy",
+        duration_label: str | None = None,
+    ) -> dict | None:
         url = self._url(settings, "/api/rent_resource/orders")
         payload = {
             "address": receiver,
             "amount": amount,
-            "resource": "energy",
-            "duration_label": settings.rent_duration_label,
+            "resource": resource,
+            "duration_label": duration_label or settings.rent_duration_label,
         }
         try:
             response = requests.post(
@@ -374,6 +436,6 @@ class RefeeEnergyProvider(EnergyProvider):
 
 
 def get_energy_provider(tron_client=None) -> EnergyProvider:
-    if config.ENERGY_SOURCE == "refee":
+    if config.ENERGY_PROVIDER == "refee":
         return RefeeEnergyProvider(tron_client=tron_client)
     return StakingEnergyProvider(tron_client=tron_client)

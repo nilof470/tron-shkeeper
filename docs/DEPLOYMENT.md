@@ -190,7 +190,8 @@ tron_fullnode:
 tron_shkeeper:
   image: ghcr.io/nilof470/tron-shkeeper:REPLACE_WITH_TAG
   extraEnv:
-    ENERGY_SOURCE: refee
+    ENERGY_PROVIDER: refee
+    BANDWIDTH_PROVIDER: refee
     REFEE: '{"api_key":"REPLACE_WITH_REFEE_API_KEY","rent_duration_label":"1h"}'
     REFEE_FIXED_ENERGY_ORDER_AMOUNT: "65000"
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT: "false"

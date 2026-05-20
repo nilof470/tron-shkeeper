@@ -34,7 +34,7 @@ from .utils import (
     skip_if_running,
 )
 from .connection_manager import ConnectionManager
-from .energy_provider import get_energy_provider
+from .energy_provider import RefeeEnergyProvider, get_energy_provider
 from .logging import logger
 from .wallet_encryption import wallet_encryption
 
@@ -153,9 +153,9 @@ def transfer_trc20_from(onetime_acc, symbol):
 
     tx_trx_res = None
     used_trx_burn_fallback = False
-    use_refee_energy_provider = config.ENERGY_SOURCE == "refee"
+    use_refee_energy_provider = config.ENERGY_PROVIDER == "refee"
     use_staking_energy_provider = (
-        config.ENERGY_SOURCE == "staking" and config.ENERGY_DELEGATION_MODE
+        config.ENERGY_PROVIDER == "staking" and config.ENERGY_DELEGATION_MODE
     )
     use_energy_provider = use_refee_energy_provider or use_staking_energy_provider
 
@@ -175,7 +175,7 @@ def transfer_trc20_from(onetime_acc, symbol):
     if use_energy_provider:
         # Bind once for both acquire (delegation) and release (post-transfer undelegate) calls.
         provider = get_energy_provider(tron_client=tron_client)
-        logger.info(f"Using energy provider source: {config.ENERGY_SOURCE}")
+        logger.info(f"Using energy provider source: {config.ENERGY_PROVIDER}")
 
         logger.info(
             f"Initiating TRC20 tokens transfer from ONETIME={onetime_publ_key} to MAIN={main_publ_key} in ENERGY DELEGATION MODE"
@@ -273,10 +273,34 @@ def transfer_trc20_from(onetime_acc, symbol):
             config.BANDWIDTH_PER_TRC20_TRANSFER_CALL,
             tron_client=tron_client,
         ):
-            logger.warning(
-                "One-time account has no bandwidth. Terminating transfer before energy provisioning."
-            )
-            return
+            if config.BANDWIDTH_PROVIDER == "disabled":
+                logger.warning(
+                    "One-time account has no bandwidth and bandwidth rental is "
+                    "disabled. Terminating transfer before energy provisioning."
+                )
+                return
+            if config.BANDWIDTH_PROVIDER == "refee":
+                logger.info(
+                    "One-time account has no bandwidth. "
+                    "Requesting re:Fee bandwidth before energy provisioning."
+                )
+                bandwidth_provider = RefeeEnergyProvider(tron_client=tron_client)
+                if not bandwidth_provider.acquire_bandwidth(
+                    onetime_publ_key,
+                    config.BANDWIDTH_PER_TRC20_TRANSFER_CALL,
+                ):
+                    logger.warning(
+                        "One-time account has no bandwidth after re:Fee rental. "
+                        "Terminating transfer before energy provisioning."
+                    )
+                    return
+            elif config.BANDWIDTH_PROVIDER == "profeex":
+                logger.warning(
+                    "One-time account has no bandwidth and ProfeeX bandwidth "
+                    "provider is not wired until bandwidth provider factory "
+                    "integration. Terminating transfer before energy provisioning."
+                )
+                return
 
         logger.info("Estimate the amount of energy needed to make transfer")
         energy_needed = tron_client.get_estimated_energy(
