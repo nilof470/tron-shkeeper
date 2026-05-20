@@ -34,7 +34,7 @@ from .utils import (
     skip_if_running,
 )
 from .connection_manager import ConnectionManager
-from .energy_provider import get_bandwidth_provider, get_energy_provider
+from .resource_providers import get_bandwidth_provider, get_energy_provider
 from .logging import logger
 from .wallet_encryption import wallet_encryption
 
@@ -127,6 +127,41 @@ def _trc20_transfer_succeeded(tx_info: dict) -> bool:
     return tx_info.get("receipt", {}).get("result") == "SUCCESS"
 
 
+def ensure_onetime_bandwidth(onetime_publ_key: str, tron_client) -> bool:
+    required_bandwidth = config.BANDWIDTH_PER_TRC20_TRANSFER_CALL
+    logger.info("Check onetime account bandwidth before energy provisioning")
+    if has_free_bw(onetime_publ_key, required_bandwidth, tron_client=tron_client):
+        logger.info("Onetime account has enough bandwidth")
+        return True
+
+    if config.BANDWIDTH_PROVIDER == "disabled":
+        logger.warning(
+            "One-time account has no bandwidth and external bandwidth rental is "
+            "disabled. Leaving sweep for a later retry after TRON bandwidth recovery."
+        )
+        return False
+
+    bandwidth_provider = get_bandwidth_provider(tron_client=tron_client)
+    if bandwidth_provider is None:
+        logger.warning(
+            "One-time account has no bandwidth and no bandwidth provider is configured."
+        )
+        return False
+
+    logger.info(
+        "One-time account has no bandwidth. "
+        f"Requesting {config.BANDWIDTH_PROVIDER} bandwidth before energy provisioning."
+    )
+    if not bandwidth_provider.acquire_bandwidth(onetime_publ_key, required_bandwidth):
+        logger.warning(
+            "One-time account has no bandwidth after provider rental. "
+            "Terminating transfer before energy provisioning."
+        )
+        return False
+
+    return True
+
+
 @celery.task()
 def transfer_trc20_from(onetime_acc, symbol):
     """
@@ -175,7 +210,7 @@ def transfer_trc20_from(onetime_acc, symbol):
     if use_energy_provider:
         # Bind once for both acquire (delegation) and release (post-transfer undelegate) calls.
         provider = get_energy_provider(tron_client=tron_client)
-        logger.info(f"Using energy provider source: {config.ENERGY_PROVIDER}")
+        logger.info(f"Using energy provider: {config.ENERGY_PROVIDER}")
 
         logger.info(
             f"Initiating TRC20 tokens transfer from ONETIME={onetime_publ_key} to MAIN={main_publ_key} in ENERGY DELEGATION MODE"
@@ -267,40 +302,8 @@ def transfer_trc20_from(onetime_acc, symbol):
                 )
                 return
 
-        logger.info("Check onetime account bandwidth before energy provisioning")
-        if not has_free_bw(
-            onetime_publ_key,
-            config.BANDWIDTH_PER_TRC20_TRANSFER_CALL,
-            tron_client=tron_client,
-        ):
-            bandwidth_provider = get_bandwidth_provider(tron_client=tron_client)
-            if bandwidth_provider is None:
-                logger.warning(
-                    "One-time account has no bandwidth and no bandwidth provider is "
-                    "configured. Terminating transfer before energy provisioning."
-                )
-                return
-            logger.info(
-                "One-time account has no bandwidth. "
-                f"Requesting {config.BANDWIDTH_PROVIDER} bandwidth before energy provisioning."
-            )
-            try:
-                bandwidth_acquired = bandwidth_provider.acquire_bandwidth(
-                    onetime_publ_key,
-                    config.BANDWIDTH_PER_TRC20_TRANSFER_CALL,
-                )
-            except NotImplementedError:
-                logger.warning(
-                    f"Bandwidth provider {config.BANDWIDTH_PROVIDER} is not implemented. "
-                    "Terminating transfer before energy provisioning."
-                )
-                return
-            if not bandwidth_acquired:
-                logger.warning(
-                    "One-time account has no bandwidth after bandwidth rental. "
-                    "Terminating transfer before energy provisioning."
-                )
-                return
+        if not ensure_onetime_bandwidth(onetime_publ_key, tron_client):
+            return
 
         logger.info("Estimate the amount of energy needed to make transfer")
         energy_needed = tron_client.get_estimated_energy(

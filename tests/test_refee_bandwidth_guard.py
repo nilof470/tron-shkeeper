@@ -81,7 +81,7 @@ class FakeConfig:
         return Decimal("1")
 
 
-class DisabledBandwidthRentConfig(FakeConfig):
+class DisabledBandwidthProviderConfig(FakeConfig):
     BANDWIDTH_PROVIDER = "disabled"
 
 
@@ -102,15 +102,6 @@ class FakeEnergyProviderWithoutBandwidth:
     def acquire_energy(self, *_args, **_kwargs):
         self.acquire_calls += 1
         return False
-
-
-class NotImplementedBandwidthProvider:
-    def __init__(self):
-        self.acquire_bandwidth_calls = []
-
-    def acquire_bandwidth(self, receiver, bandwidth_required):
-        self.acquire_bandwidth_calls.append((receiver, bandwidth_required))
-        raise NotImplementedError("not implemented yet")
 
 
 class RefeeBandwidthGuardTests(unittest.TestCase):
@@ -206,7 +197,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
         self.assertEqual(energy_provider.acquire_calls, 1)
         self.assertEqual(client.energy_estimate_calls, 1)
 
-    def test_refee_sweep_stops_without_renting_bandwidth_when_flag_is_disabled(self):
+    def test_sweep_uses_existing_bandwidth_only_when_bandwidth_provider_disabled(self):
         from app import tasks
         from app.schemas import KeyType
 
@@ -220,7 +211,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
         original_get_energy_provider = tasks.get_energy_provider
         original_get_bandwidth_provider = tasks.get_bandwidth_provider
         try:
-            tasks.config = DisabledBandwidthRentConfig()
+            tasks.config = DisabledBandwidthProviderConfig()
             tasks.ConnectionManager = SimpleNamespace(client=lambda: client)
 
             def fake_get_key(key_type, pub=None):
@@ -232,7 +223,11 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
 
             tasks.get_key = fake_get_key
             tasks.get_energy_provider = lambda tron_client=None: provider
-            tasks.get_bandwidth_provider = lambda tron_client=None: None
+
+            def fail_get_bandwidth_provider(tron_client=None):
+                raise AssertionError("disabled bandwidth provider must not be requested")
+
+            tasks.get_bandwidth_provider = fail_get_bandwidth_provider
 
             result = tasks.transfer_trc20_from.run(onetime, "USDT")
         finally:
@@ -288,22 +283,26 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
         self.assertEqual(provider.acquire_calls, 1)
         self.assertEqual(client.energy_estimate_calls, 1)
 
-    def test_not_implemented_bandwidth_provider_stops_before_energy_provisioning(self):
+    def test_sweep_can_use_different_energy_and_bandwidth_providers(self):
         from app import tasks
         from app.schemas import KeyType
+
+        class MixedProviderConfig(FakeConfig):
+            ENERGY_PROVIDER = "refee"
+            BANDWIDTH_PROVIDER = "profeex"
 
         fee_deposit = "TRfonfrf1AqFzXqJTpad8Tz4EzvCBhZe5k"
         onetime = "TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7"
         client = FakeTronClient()
         energy_provider = FakeProvider()
-        bandwidth_provider = NotImplementedBandwidthProvider()
+        bandwidth_provider = FakeProvider()
         original_config = tasks.config
         original_connection_manager = tasks.ConnectionManager
         original_get_key = tasks.get_key
         original_get_energy_provider = tasks.get_energy_provider
         original_get_bandwidth_provider = tasks.get_bandwidth_provider
         try:
-            tasks.config = FakeConfig()
+            tasks.config = MixedProviderConfig()
             tasks.ConnectionManager = SimpleNamespace(client=lambda: client)
 
             def fake_get_key(key_type, pub=None):
@@ -328,10 +327,10 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(
             bandwidth_provider.acquire_bandwidth_calls,
-            [(onetime, FakeConfig.BANDWIDTH_PER_TRC20_TRANSFER_CALL)],
+            [(onetime, MixedProviderConfig.BANDWIDTH_PER_TRC20_TRANSFER_CALL)],
         )
-        self.assertEqual(energy_provider.acquire_calls, 0)
-        self.assertEqual(client.energy_estimate_calls, 0)
+        self.assertEqual(energy_provider.acquire_calls, 1)
+        self.assertEqual(client.energy_estimate_calls, 1)
 
     def test_refee_provider_rents_minimum_bandwidth_order(self):
         from app.resource_providers.refee import RefeeProvider

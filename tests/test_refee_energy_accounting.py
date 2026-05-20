@@ -9,7 +9,7 @@ ONETIME = "TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7"
 
 class FakeConfig:
     ENERGY_PROVIDER = "refee"
-    BANDWIDTH_PROVIDER = "refee"
+    BANDWIDTH_PROVIDER = "disabled"
     ENERGY_DELEGATION_MODE = False
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT = False
     ENERGY_DELEGATION_MODE_ALLOW_ADDITIONAL_ENERGY_DELEGATION = False
@@ -145,6 +145,7 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
         original_get_key = tasks.get_key
         original_get_energy_delegator = tasks.get_energy_delegator
         original_get_energy_provider = tasks.get_energy_provider
+        original_get_bandwidth_provider = tasks.get_bandwidth_provider
 
         tasks.config = config or FakeConfig()
         tasks.ConnectionManager = SimpleNamespace(client=lambda: client)
@@ -161,6 +162,7 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
         tasks.get_key = fake_get_key
         tasks.get_energy_delegator = lambda: (object(), "TDELEGATOR")
         tasks.get_energy_provider = lambda tron_client=None: provider
+        tasks.get_bandwidth_provider = lambda tron_client=None: None
 
         def restore():
             tasks.config = original_config
@@ -168,6 +170,7 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
             tasks.get_key = original_get_key
             tasks.get_energy_delegator = original_get_energy_delegator
             tasks.get_energy_provider = original_get_energy_provider
+            tasks.get_bandwidth_provider = original_get_bandwidth_provider
 
         return restore
 
