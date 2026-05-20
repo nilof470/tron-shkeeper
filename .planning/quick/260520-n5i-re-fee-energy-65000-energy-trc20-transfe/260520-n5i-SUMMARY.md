@@ -2,14 +2,15 @@
 status: complete
 type: quick
 completed: 2026-05-20
-code_commit: pending
+code_commit: 21319cc
 ---
 
 # Quick Task 260520-n5i: Prevent Duplicate re:Fee Energy Rental - Summary
 
 ## Outcome
 
-Fixed the duplicate fixed re:Fee energy rental path. A fixed `65,000` energy
+Fixed the duplicate fixed re:Fee energy rental path in commit `21319cc`.
+A fixed `65,000` energy
 order now treats available on-chain energy down to `64,500` as acceptable, so
 the next balance scan will not rent another `65,000` energy just because the
 provider/fullnode reports slightly less than the requested amount.
