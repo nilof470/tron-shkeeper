@@ -17,6 +17,7 @@ Use the official SHKeeper deployment model:
 - custom private GHCR image for `tron-shkeeper`
 - Kubernetes `imagePullSecret` for the private image
 - re:Fee as the TRC20 energy provider
+- ProfeeX as the onetime-wallet bandwidth provider
 
 The chart runs the TRON sidecar as one pod with three containers:
 
@@ -191,8 +192,9 @@ tron_shkeeper:
   image: ghcr.io/nilof470/tron-shkeeper:REPLACE_WITH_TAG
   extraEnv:
     ENERGY_PROVIDER: refee
-    BANDWIDTH_PROVIDER: refee
+    BANDWIDTH_PROVIDER: profeex
     REFEE: '{"api_key":"REPLACE_WITH_REFEE_API_KEY","rent_duration_label":"1h"}'
+    PROFEEX: '{"api_key":"REPLACE_WITH_PROFEEX_API_KEY","bandwidth_duration_label":"1h"}'
     REFEE_FIXED_ENERGY_ORDER_AMOUNT: "65000"
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT: "false"
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH: "true"
@@ -209,6 +211,15 @@ usdc:
 
 Notes:
 
+- `ENERGY_PROVIDER=refee` rents TRC20 transfer energy from re:Fee.
+- `BANDWIDTH_PROVIDER=profeex` rents onetime-wallet bandwidth from ProfeeX only
+  when the wallet does not already have enough bandwidth for the TRC20 transfer.
+- `BANDWIDTH_PROVIDER=disabled` preserves the old behavior: the sweep uses only
+  bandwidth already available on the onetime wallet and retries naturally after
+  TRON restores daily bandwidth.
+- ProfeeX ordinary bandwidth rental uses `/api/v1/delegation/buybandwidth`.
+  Flash bandwidth is not used because it requires the target address to have
+  its own consumed staked bandwidth.
 - `ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT=false` prevents fallback to
   funding onetime wallets for TRC20 transfer fee burn if re:Fee fails.
 - `ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH=true` allows TRX burn for

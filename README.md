@@ -42,8 +42,7 @@ BANDWIDTH_PROVIDER=refee
 on-chain energy on the onetime address, then broadcasts the TRC20 transfer.
 
 `BANDWIDTH_PROVIDER` controls bandwidth rental independently. Allowed values are
-`disabled`, `refee`, and `profeex`; ProfeeX configuration is available before
-the provider factory integration is wired.
+`disabled`, `refee`, and `profeex`.
 
 ## re:Fee Setup
 
@@ -103,8 +102,10 @@ If bandwidth is not currently available:
   after TRON daily bandwidth recovery or manual delegation.
 - `BANDWIDTH_PROVIDER=refee` rents re:Fee bandwidth before energy provisioning,
   then continues to energy provisioning after bandwidth is available.
-- `BANDWIDTH_PROVIDER=profeex` is accepted as a configuration value, but full
-  ProfeeX bandwidth provider integration is completed in later tasks.
+- `BANDWIDTH_PROVIDER=profeex` rents ordinary ProfeeX bandwidth for the onetime
+  wallet before energy provisioning, then continues after bandwidth is
+  available. It does not call ProfeeX when the wallet already has enough
+  bandwidth.
 
 The default periodic rescan interval is:
 
