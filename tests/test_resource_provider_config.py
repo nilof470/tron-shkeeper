@@ -103,6 +103,14 @@ class ResourceProviderConfigTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             ProfeeXConfig(api_key="secret", fixed_bandwidth_order_amount=10_001)
 
+    def test_profeex_config_rejects_removed_bandwidth_min_max_keys(self):
+        with self.assertRaises(ValidationError):
+            ProfeeXConfig(
+                api_key="secret",
+                min_bandwidth_order_amount=350,
+                max_bandwidth_order_amount=10_000,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

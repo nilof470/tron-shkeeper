@@ -1,7 +1,7 @@
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 
 PROFEEX_MIN_ENERGY_ORDER_AMOUNT = 64_285
@@ -11,6 +11,8 @@ PROFEEX_MAX_BANDWIDTH_ORDER_AMOUNT = 10_000
 
 
 class ProfeeXConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     api_base_url: str = Field(default="https://api.profeex.io/api/v1", min_length=1)
     api_key: SecretStr
     currency: Literal["TRX", "USDT"] = "TRX"
