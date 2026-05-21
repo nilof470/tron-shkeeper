@@ -189,10 +189,11 @@ def transfer_trc20_from(onetime_acc, symbol):
     tx_trx_res = None
     used_trx_burn_fallback = False
     use_refee_energy_provider = config.ENERGY_PROVIDER == "refee"
+    use_external_energy_provider = config.ENERGY_PROVIDER in {"refee", "profeex"}
     use_staking_energy_provider = (
         config.ENERGY_PROVIDER == "staking" and config.ENERGY_DELEGATION_MODE
     )
-    use_energy_provider = use_refee_energy_provider or use_staking_energy_provider
+    use_energy_provider = use_external_energy_provider or use_staking_energy_provider
 
     logger.info(f"Check ONETIME={onetime_publ_key} {symbol} balance")
     min_threshold = config.get_min_transfer_threshold(symbol)
@@ -329,7 +330,7 @@ def transfer_trc20_from(onetime_acc, symbol):
                 f"of {energy_needed} energy"
             )
 
-            if use_refee_energy_provider:
+            if use_external_energy_provider:
                 energy_to_provision = energy_needed - onetime_energy_available
             else:
                 logger.info("Check if energy was alread delegated")
