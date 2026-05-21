@@ -1,5 +1,5 @@
 from .base import BandwidthProvider, EnergyProvider
-from .profeex import ProfeeXBandwidthProvider
+from .profeex import ProfeeXBandwidthProvider, ProfeeXProvider
 from .refee import RefeeProvider
 from .staking import StakingEnergyProvider
 from ..config import config
@@ -8,6 +8,8 @@ from ..config import config
 def get_energy_provider(tron_client=None) -> EnergyProvider:
     if config.ENERGY_PROVIDER == "refee":
         return RefeeProvider(tron_client=tron_client)
+    if config.ENERGY_PROVIDER == "profeex":
+        return ProfeeXProvider(tron_client=tron_client)
     return StakingEnergyProvider(tron_client=tron_client)
 
 

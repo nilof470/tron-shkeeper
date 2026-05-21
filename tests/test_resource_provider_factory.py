@@ -16,6 +16,19 @@ class ResourceProviderFactoryTests(unittest.TestCase):
 
         self.assertIsInstance(provider, RefeeProvider)
 
+    def test_energy_factory_returns_profeex_provider(self):
+        from app.resource_providers import factory
+        from app.resource_providers.profeex import ProfeeXProvider
+
+        original_config = factory.config
+        try:
+            factory.config = SimpleNamespace(ENERGY_PROVIDER="profeex")
+            provider = factory.get_energy_provider(tron_client=object())
+        finally:
+            factory.config = original_config
+
+        self.assertIsInstance(provider, ProfeeXProvider)
+
     def test_energy_factory_returns_staking_provider_by_default(self):
         from app.resource_providers import factory
         from app.resource_providers.staking import StakingEnergyProvider

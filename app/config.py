@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     ENERGY_DELEGATION_MODE_ENERGY_DELEGATION_FACTOR: Decimal = Decimal("1.0")
     ENERGY_DELEGATION_MODE_SEPARATE_BALANCE_AND_ENERGY_ACCOUNTS: bool = False
     ENERGY_DELEGATION_MODE_ENERGY_ACCOUNT_PUB_KEY: str | None = None
-    ENERGY_PROVIDER: Literal["staking", "refee"] = "staking"
+    ENERGY_PROVIDER: Literal["staking", "refee", "profeex"] = "staking"
     BANDWIDTH_PROVIDER: Literal["disabled", "refee", "profeex"] = "disabled"
     REFEE: Json[RefeeConfig] | None = None
     PROFEEX: Json[ProfeeXConfig] | None = None
@@ -176,6 +176,10 @@ class Settings(BaseSettings):
     def validate_resource_provider_config_state(self):
         if self.ENERGY_PROVIDER == "refee" and self.REFEE is None:
             raise ValueError("REFEE must be configured when ENERGY_PROVIDER='refee'")
+        if self.ENERGY_PROVIDER == "profeex" and self.PROFEEX is None:
+            raise ValueError(
+                "PROFEEX must be configured when ENERGY_PROVIDER='profeex'"
+            )
         if self.BANDWIDTH_PROVIDER == "refee" and self.REFEE is None:
             raise ValueError("REFEE must be configured when BANDWIDTH_PROVIDER='refee'")
         if self.BANDWIDTH_PROVIDER == "profeex" and self.PROFEEX is None:

@@ -28,6 +28,13 @@ class ResourceProviderConfigTests(unittest.TestCase):
         ):
             Settings(ENERGY_PROVIDER="staking", BANDWIDTH_PROVIDER="profeex")
 
+    def test_profeex_required_for_profeex_energy_provider(self):
+        with self.assertRaisesRegex(
+            ValidationError,
+            "PROFEEX must be configured when ENERGY_PROVIDER='profeex'",
+        ):
+            Settings(ENERGY_PROVIDER="profeex", BANDWIDTH_PROVIDER="disabled")
+
     def test_staking_energy_with_refee_bandwidth_provider_is_valid(self):
         settings = Settings(
             ENERGY_PROVIDER="staking",
@@ -58,9 +65,16 @@ class ResourceProviderConfigTests(unittest.TestCase):
         self.assertEqual(settings.ENERGY_PROVIDER, "refee")
         self.assertEqual(settings.BANDWIDTH_PROVIDER, "disabled")
 
-    def test_profeex_is_not_valid_energy_provider_yet(self):
-        with self.assertRaises(ValidationError):
-            Settings(ENERGY_PROVIDER="profeex")
+    def test_profeex_energy_provider_is_valid_when_configured(self):
+        settings = Settings(
+            ENERGY_PROVIDER="profeex",
+            BANDWIDTH_PROVIDER="disabled",
+            PROFEEX='{"api_key":"secret"}',
+        )
+
+        self.assertEqual(settings.ENERGY_PROVIDER, "profeex")
+        self.assertEqual(settings.PROFEEX.fixed_energy_order_amount, 65_000)
+        self.assertEqual(settings.PROFEEX.fixed_bandwidth_order_amount, 350)
 
     def test_profeex_config_rejects_non_https_api_base_url(self):
         with self.assertRaises(ValidationError):
@@ -73,13 +87,21 @@ class ResourceProviderConfigTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             ProfeeXConfig(api_key="")
 
-    def test_profeex_config_rejects_bandwidth_min_below_api_minimum(self):
+    def test_profeex_config_rejects_energy_fixed_amount_below_provider_minimum(self):
         with self.assertRaises(ValidationError):
-            ProfeeXConfig(api_key="secret", min_bandwidth_order_amount=349)
+            ProfeeXConfig(api_key="secret", fixed_energy_order_amount=64_284)
 
-    def test_profeex_config_rejects_bandwidth_max_above_api_maximum(self):
+    def test_profeex_config_rejects_energy_fixed_amount_above_provider_maximum(self):
         with self.assertRaises(ValidationError):
-            ProfeeXConfig(api_key="secret", max_bandwidth_order_amount=10_001)
+            ProfeeXConfig(api_key="secret", fixed_energy_order_amount=3_000_001)
+
+    def test_profeex_config_rejects_bandwidth_fixed_amount_below_provider_minimum(self):
+        with self.assertRaises(ValidationError):
+            ProfeeXConfig(api_key="secret", fixed_bandwidth_order_amount=349)
+
+    def test_profeex_config_rejects_bandwidth_fixed_amount_above_provider_maximum(self):
+        with self.assertRaises(ValidationError):
+            ProfeeXConfig(api_key="secret", fixed_bandwidth_order_amount=10_001)
 
 
 if __name__ == "__main__":

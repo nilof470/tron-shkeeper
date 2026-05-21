@@ -1,16 +1,31 @@
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
+
+
+PROFEEX_MIN_ENERGY_ORDER_AMOUNT = 64_285
+PROFEEX_MAX_ENERGY_ORDER_AMOUNT = 3_000_000
+PROFEEX_MIN_BANDWIDTH_ORDER_AMOUNT = 350
+PROFEEX_MAX_BANDWIDTH_ORDER_AMOUNT = 10_000
 
 
 class ProfeeXConfig(BaseModel):
     api_base_url: str = Field(default="https://api.profeex.io/api/v1", min_length=1)
     api_key: SecretStr
     currency: Literal["TRX", "USDT"] = "TRX"
+    energy_duration_label: Literal["1h", "1d", "3d", "7d", "14d"] = "1h"
     bandwidth_duration_label: Literal["1h", "1d", "3d", "7d", "14d"] = "1h"
-    min_bandwidth_order_amount: int = Field(default=350, ge=350)
-    max_bandwidth_order_amount: int = Field(default=10_000, le=10_000)
+    fixed_energy_order_amount: int = Field(
+        default=65_000,
+        ge=PROFEEX_MIN_ENERGY_ORDER_AMOUNT,
+        le=PROFEEX_MAX_ENERGY_ORDER_AMOUNT,
+    )
+    fixed_bandwidth_order_amount: int = Field(
+        default=350,
+        ge=PROFEEX_MIN_BANDWIDTH_ORDER_AMOUNT,
+        le=PROFEEX_MAX_BANDWIDTH_ORDER_AMOUNT,
+    )
     poll_interval_sec: float = Field(default=2.0, gt=0)
     timeout_sec: int = Field(default=60, gt=0)
 
@@ -29,12 +44,3 @@ class ProfeeXConfig(BaseModel):
         if not value.get_secret_value():
             raise ValueError("api_key must not be empty")
         return value
-
-    @model_validator(mode="after")
-    def validate_bandwidth_order_range(self):
-        if self.min_bandwidth_order_amount > self.max_bandwidth_order_amount:
-            raise ValueError(
-                "min_bandwidth_order_amount must be less than or equal to "
-                "max_bandwidth_order_amount"
-            )
-        return self
