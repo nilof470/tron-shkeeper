@@ -1,8 +1,8 @@
 # SHKeeper TRON Deployment Runbook
 
-This guide records the deployment procedure used for the re:Fee-enabled
-`tron-shkeeper` fork. It is written so the same process can be repeated for
-production without relying on chat history.
+This guide records the deployment procedure used for the resource-provider
+enabled `tron-shkeeper` fork. It is written so the same process can be repeated
+for production without relying on chat history.
 
 Do not commit real API keys, wallet passwords, GitHub tokens, or generated
 Kubernetes secrets. Keep `/root/shkeeper-values.yaml` on the target server or in
@@ -16,7 +16,7 @@ Use the official SHKeeper deployment model:
 - Helm chart `vsys-host/shkeeper`
 - custom private GHCR image for `tron-shkeeper`
 - Kubernetes `imagePullSecret` for the private image
-- re:Fee as the TRC20 energy provider
+- re:Fee or ProfeeX as the TRC20 energy provider
 - ProfeeX as the onetime-wallet bandwidth provider
 
 The chart runs the TRON sidecar as one pod with three containers:
@@ -191,11 +191,9 @@ tron_fullnode:
 tron_shkeeper:
   image: ghcr.io/nilof470/tron-shkeeper:REPLACE_WITH_TAG
   extraEnv:
-    ENERGY_PROVIDER: refee
+    ENERGY_PROVIDER: profeex
     BANDWIDTH_PROVIDER: profeex
-    REFEE: '{"api_key":"REPLACE_WITH_REFEE_API_KEY","rent_duration_label":"1h"}'
-    PROFEEX: '{"api_key":"REPLACE_WITH_PROFEEX_API_KEY","bandwidth_duration_label":"1h"}'
-    REFEE_FIXED_ENERGY_ORDER_AMOUNT: "65000"
+    PROFEEX: '{"api_key":"REPLACE_WITH_PROFEEX_API_KEY","energy_duration_label":"1h","bandwidth_duration_label":"1h","currency":"TRX","fixed_energy_order_amount":65000,"fixed_bandwidth_order_amount":350}'
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT: "false"
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH: "true"
     USDT_MIN_TRANSFER_THRESHOLD: "0.5"
@@ -212,16 +210,19 @@ usdc:
 Notes:
 
 - `ENERGY_PROVIDER=refee` rents TRC20 transfer energy from re:Fee.
+- `ENERGY_PROVIDER=profeex` rents TRC20 transfer energy from ProfeeX.
 - `BANDWIDTH_PROVIDER=profeex` rents onetime-wallet bandwidth from ProfeeX only
   when the wallet does not already have enough bandwidth for the TRC20 transfer.
 - `BANDWIDTH_PROVIDER=disabled` preserves the old behavior: the sweep uses only
   bandwidth already available on the onetime wallet and retries naturally after
   TRON restores daily bandwidth.
+- ProfeeX ordinary energy rental uses `/api/v1/delegation/buyenergy`.
 - ProfeeX ordinary bandwidth rental uses `/api/v1/delegation/buybandwidth`.
-  Flash bandwidth is not used because it requires the target address to have
-  its own consumed staked bandwidth.
+  Flash resources are not used because they require the target address to have
+  its own consumed staked resources.
 - `ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT=false` prevents fallback to
-  funding onetime wallets for TRC20 transfer fee burn if re:Fee fails.
+  funding onetime wallets for TRC20 transfer fee burn if re:Fee fails. This
+  fallback remains re:Fee-only and is not used for ProfeeX failures.
 - `ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH=true` allows TRX burn for
   account activation bandwidth. Keep this only if activation burn is acceptable.
 - `REFEE_FIXED_ENERGY_ORDER_AMOUNT=65000` ensures at least 65k energy is
@@ -232,6 +233,48 @@ Notes:
   should be swept. The TRC20 sweep check requires `balance > threshold`.
 - `TRX_MIN_TRANSFER_THRESHOLD` prevents sweeping activation dust. TRX sweep uses
   `balance >= threshold`, so use a value above dust, for example `1.01`.
+
+### TRON resource provider environment variables
+
+Use these variables in `tron_shkeeper.extraEnv` to control energy and bandwidth
+provisioning independently:
+
+| Env var | Default | Required when | Meaning |
+| --- | --- | --- | --- |
+| `ENERGY_PROVIDER` | `staking` | Always optional | Energy provider selector for TRC20 sweeps. Allowed values: `staking`, `refee`, `profeex`. `staking` is active only when `ENERGY_DELEGATION_MODE=true`; with the default `ENERGY_DELEGATION_MODE=false`, the sidecar uses the legacy TRX burn funding flow. |
+| `BANDWIDTH_PROVIDER` | `disabled` | Always optional | Bandwidth provider for the onetime wallet before energy provisioning. Allowed values: `disabled`, `refee`, `profeex`. |
+| `REFEE` | empty | `ENERGY_PROVIDER=refee` or `BANDWIDTH_PROVIDER=refee` | re:Fee JSON config with `api_key` and optional duration/order settings. |
+| `PROFEEX` | empty | `ENERGY_PROVIDER=profeex` or `BANDWIDTH_PROVIDER=profeex` | ProfeeX JSON config with `api_key`, duration, currency, and fixed order settings. |
+| `REFEE_FIXED_ENERGY_ORDER_AMOUNT` | `65000` | Optional | Fixed re:Fee energy order amount. Use `0` to size from the fullnode estimate. |
+
+`BANDWIDTH_PROVIDER=disabled` is the old no-rental behavior: the sidecar uses
+only bandwidth already available on the onetime wallet. If there is not enough
+bandwidth, the sweep stops before energy provisioning and retries later after
+TRON daily bandwidth recovery or manual delegation.
+
+`ENERGY_PROVIDER=profeex` uses ordinary ProfeeX energy delegation. With the
+default `fixed_energy_order_amount=65000`, the app treats `64500` available
+energy as sufficient to avoid duplicate fixed rentals.
+
+`BANDWIDTH_PROVIDER=profeex` uses ordinary ProfeeX bandwidth delegation. It
+does not rent bandwidth when the onetime wallet already has enough bandwidth.
+
+Do not use the old unshipped names `ENERGY_SOURCE` or `REFEE_RENT_BANDWIDTH` in
+this build.
+
+`PROFEEX` JSON fields:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `api_base_url` | `https://api.profeex.io/api/v1` | ProfeeX API base URL. Must be HTTPS. |
+| `api_key` | required | ProfeeX API key. |
+| `currency` | `TRX` | Payment currency for the order. Allowed values: `TRX`, `USDT`. |
+| `energy_duration_label` | `1h` | Energy rental duration. Allowed values: `1h`, `1d`, `3d`, `7d`, `14d`. |
+| `bandwidth_duration_label` | `1h` | Bandwidth rental duration. Allowed values: `1h`, `1d`, `3d`, `7d`, `14d`. |
+| `fixed_energy_order_amount` | `65000` | Actual energy order size sent to ProfeeX. This is not an API min/max field. |
+| `fixed_bandwidth_order_amount` | `350` | Actual bandwidth order size sent to ProfeeX. This is not an API min/max field. |
+| `poll_interval_sec` | `2.0` | Poll interval while waiting for the ProfeeX task status. |
+| `timeout_sec` | `60` | Timeout while waiting for the order to become `ACTIVE`. |
 
 ## Install SHKeeper
 
@@ -315,7 +358,11 @@ Fund this address with TRX before testing or going live. It is used for
 activation transfers and TRX payouts. In dev we used about `30 TRX`; production
 should use an operator-defined reserve and monitoring.
 
-## re:Fee Requirements
+## Resource Provider API Requirements
+
+These checks apply only to the provider configured in `tron_shkeeper.extraEnv`.
+
+### re:Fee
 
 The re:Fee API key must allow requests from the VPS public IP. Get the IP:
 
@@ -328,6 +375,21 @@ Add that IP to the re:Fee whitelist. Without this, energy rental fails with:
 ```text
 403 {"detail":"Your IP is not on the user's whitelist"}
 ```
+
+### ProfeeX
+
+The ProfeeX API key is sent as `X-API-Key`. Verify it from the VPS or from the
+TRON tasks container before testing sweeps:
+
+```bash
+curl -i \
+  -H "X-API-Key: REPLACE_WITH_PROFEEX_API_KEY" \
+  "https://api.profeex.io/api/v1/balance"
+```
+
+Expected response is HTTP `200` with a JSON `balances` object. HTTP `401`
+means the key is invalid; HTTP `403` means the request was rejected before
+credential validation, for example by upstream access policy.
 
 ## Create a Test USDT Deposit
 
@@ -358,16 +420,19 @@ Watch worker logs:
 kubectl logs -n shkeeper deployment/tron-shkeeper -c tasks -f
 ```
 
-Expected successful flow:
+Expected successful flow with `ENERGY_PROVIDER=profeex`:
 
 ```text
 Balance OK
 Activating ... by sending 0.1 TRX
 0.1 TRX sent
-Requesting re:Fee energy rental
-re:Fee energy successfully delegated
+Requesting ProfeeX energy rental
+ProfeeX energy successfully delegated
 ... USDT sent to fee_deposit
 ```
+
+With `ENERGY_PROVIDER=refee`, the provider-specific lines say
+`Requesting re:Fee energy rental` and `re:Fee energy successfully delegated`.
 
 If a retry is needed without waiting for the periodic scanner:
 
@@ -476,7 +541,8 @@ When an onetime address is not active, the sidecar sends `0.1 TRX` from
 is `true`, TRX may burn for the activation transfer bandwidth.
 
 Keep `ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT=false` to prevent fallback
-TRX burn for the USDT sweep itself when re:Fee fails.
+TRX burn for the USDT sweep itself when re:Fee fails. ProfeeX failures terminate
+without using this re:Fee-only fallback.
 
 ### re:Fee 403 whitelist error
 
@@ -512,7 +578,7 @@ Before production traffic, define and test a backup procedure for:
 - `/root/shkeeper-values.yaml`
 - wallet encryption password
 - admin password
-- re:Fee API key
+- Resource provider API keys, for example re:Fee and ProfeeX
 - GHCR pull token or replacement deployment token
 
 Do not rely only on container images; wallet state lives in persistent volumes.

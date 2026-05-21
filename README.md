@@ -26,20 +26,30 @@ celery -A celery_worker.celery worker -E --loglevel=info
 
 ## Resource Providers
 
-TRC20 sweeps need TRON energy. The sidecar supports two energy providers:
+TRC20 sweeps need TRON energy. The sidecar supports three energy providers:
 
 ```bash
 ENERGY_PROVIDER=staking  # default
 BANDWIDTH_PROVIDER=disabled  # default
 ENERGY_PROVIDER=refee
 BANDWIDTH_PROVIDER=refee
+ENERGY_PROVIDER=profeex
+BANDWIDTH_PROVIDER=profeex
 ```
 
-`staking` preserves the legacy freeze/delegate resource flow.
+`staking` preserves the legacy freeze/delegate resource flow when
+`ENERGY_DELEGATION_MODE=true`. With the default `ENERGY_DELEGATION_MODE=false`,
+the sidecar uses the legacy TRX burn funding flow.
 
 `refee` rents energy from re:Fee per sweep through
 `POST /api/rent_resource/orders`, waits for `status="delegated"`, verifies the
 on-chain energy on the onetime address, then broadcasts the TRC20 transfer.
+
+`profeex` rents ordinary energy from ProfeeX per sweep through
+`/api/v1/delegation/buyenergy`, waits for `status="ACTIVE"`, verifies the
+on-chain energy on the onetime address, then broadcasts the TRC20 transfer.
+ProfeeX failures terminate the sweep and do not use the re:Fee-only TRX burn
+fallback.
 
 `BANDWIDTH_PROVIDER` controls bandwidth rental independently. Allowed values are
 `disabled`, `refee`, and `profeex`.
@@ -82,6 +92,42 @@ re:Fee sweep after the fee-deposit wallet has already been initialized with
 USDT. Fixed values must be `0` or greater than or equal to
 `min_energy_order_amount`. Set `REFEE_FIXED_ENERGY_ORDER_AMOUNT=0` to restore
 dynamic sizing from the fullnode estimate and `energy_overprovision_factor`.
+
+## ProfeeX Setup
+
+Set `ENERGY_PROVIDER=profeex` and/or `BANDWIDTH_PROVIDER=profeex`, then provide
+`PROFEEX` as JSON:
+
+```bash
+export ENERGY_PROVIDER=profeex
+export BANDWIDTH_PROVIDER=profeex
+export PROFEEX='{"api_key":"YOUR_PROFEEX_API_KEY","energy_duration_label":"1h","bandwidth_duration_label":"1h","currency":"TRX","fixed_energy_order_amount":65000,"fixed_bandwidth_order_amount":350}'
+```
+
+Optional `PROFEEX` fields:
+
+```json
+{
+  "api_base_url": "https://api.profeex.io/api/v1",
+  "api_key": "YOUR_PROFEEX_API_KEY",
+  "currency": "TRX",
+  "energy_duration_label": "1h",
+  "bandwidth_duration_label": "1h",
+  "fixed_energy_order_amount": 65000,
+  "fixed_bandwidth_order_amount": 350,
+  "poll_interval_sec": 2.0,
+  "timeout_sec": 60
+}
+```
+
+Allowed duration values are `1h`, `1d`, `3d`, `7d`, and `14d`.
+`api_key` is required and must be non-empty. Startup fails if `PROFEEX` is
+missing while either `ENERGY_PROVIDER=profeex` or `BANDWIDTH_PROVIDER=profeex`.
+
+`fixed_energy_order_amount` defaults to `65000`; the sidecar treats `64500`
+available energy as enough to avoid duplicate fixed rentals.
+`fixed_bandwidth_order_amount` defaults to `350`, which is the normal TRC20
+transfer bandwidth order size used before energy provisioning.
 
 ## Sweep Prerequisites
 
