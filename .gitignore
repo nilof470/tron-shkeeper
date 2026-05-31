@@ -21,4 +21,4 @@ docker-compose*
 BUGS
 .vscode
 *.http
-.gstack/
+/.gstack/
