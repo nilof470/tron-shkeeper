@@ -100,8 +100,39 @@ class FakeChain:
         return SimpleNamespace(id="task-1")
 
 
+class ReleaseFailingRedisLock:
+    def __init__(self, events, exc):
+        self.events = events
+        self.exc = exc
+
+    def acquire(self, blocking=True):
+        self.events.append(("redis_lock_acquire", blocking))
+        return True
+
+    def release(self):
+        self.events.append(("redis_lock_release",))
+        raise self.exc
+
+
+class ReleaseFailingRedisClient:
+    def __init__(self, events, exc):
+        self.events = events
+        self.exc = exc
+
+    def lock(self, *args, **kwargs):
+        self.events.append(("redis_lock_create", args, kwargs))
+        return ReleaseFailingRedisLock(self.events, self.exc)
+
+
 class PayoutTaskResourceProvisioningTests(unittest.TestCase):
-    def patch_tasks(self, tasks, *, enabled=True, transfer_result=None):
+    def patch_tasks(
+        self,
+        tasks,
+        *,
+        enabled=True,
+        transfer_result=None,
+        replace_lock=True,
+    ):
         events = []
         original_config = tasks.config
         original_wallet = tasks.Wallet
@@ -119,6 +150,9 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         tasks.config = SimpleNamespace(
             TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=enabled,
             CONCURRENT_MAX_WORKERS=1,
+            REDIS_HOST="localhost",
+            TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC=900,
+            TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC=900,
         )
 
         fake_wallet_factory = lambda symbol: FakeWallet(
@@ -133,15 +167,17 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
 
         tasks.ensure_fee_deposit_resources_for_usdt_payout = fake_helper
 
-        @contextmanager
-        def fake_lock():
-            events.append(("lock_enter",))
-            try:
-                yield
-            finally:
-                events.append(("lock_exit",))
+        if replace_lock:
+            @contextmanager
+            def fake_lock():
+                events.append(("lock_enter",))
+                try:
+                    yield
+                finally:
+                    events.append(("lock_exit",))
 
-        tasks.usdt_payout_resource_lock = fake_lock
+            tasks.usdt_payout_resource_lock = fake_lock
+            task_globals["usdt_payout_resource_lock"] = fake_lock
         posted = []
         tasks.post_payout_results = SimpleNamespace(
             delay=lambda results, symbol: posted.append((results, symbol))
@@ -149,7 +185,6 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         task_globals["Wallet"] = fake_wallet_factory
         task_globals["config"] = tasks.config
         task_globals["ensure_fee_deposit_resources_for_usdt_payout"] = fake_helper
-        task_globals["usdt_payout_resource_lock"] = fake_lock
         task_globals["post_payout_results"] = tasks.post_payout_results
 
         def restore():
@@ -251,6 +286,48 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         self.assertEqual(events[2][0], "transfer")
         self.assertEqual(events[3][0], "lock_exit")
         self.assertEqual(posted, [])
+
+    def test_payout_posts_result_when_lock_release_connection_fails(self):
+        tasks = load_tasks()
+
+        lock_events = []
+        original_from_url = tasks.redis.Redis.from_url
+        tasks.redis.Redis.from_url = lambda _url: ReleaseFailingRedisClient(
+            lock_events,
+            tasks.redis.exceptions.ConnectionError("redis down"),
+        )
+        events, posted, restore = self.patch_tasks(
+            tasks,
+            enabled=True,
+            replace_lock=False,
+        )
+        try:
+            result = tasks.payout.run(
+                [
+                    {
+                        "dst": DESTINATION,
+                        "amount": Decimal("1.25"),
+                        "ensure_usdt_payout_resources": True,
+                    }
+                ],
+                "USDT",
+            )
+        finally:
+            tasks.redis.Redis.from_url = original_from_url
+            restore()
+
+        self.assertEqual(
+            events,
+            [
+                ("ensure", DESTINATION, Decimal("1.25"), "tron-client"),
+                ("transfer", DESTINATION, Decimal("1.25")),
+            ],
+        )
+        self.assertEqual(lock_events[0][0], "redis_lock_create")
+        self.assertEqual(lock_events[1], ("redis_lock_acquire", True))
+        self.assertEqual(lock_events[2], ("redis_lock_release",))
+        self.assertEqual(result[0]["status"], "success")
+        self.assertEqual(posted, [(result, "USDT")])
 
     def test_payout_does_not_call_resource_helper_for_non_usdt_path(self):
         tasks = load_tasks()

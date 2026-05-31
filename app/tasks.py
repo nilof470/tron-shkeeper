@@ -59,8 +59,8 @@ def usdt_payout_resource_lock():
     finally:
         try:
             lock.release()
-        except redis.exceptions.LockError:
-            logger.warning("TRON USDT payout resource lock was already released")
+        except redis.exceptions.RedisError:
+            logger.warning("TRON USDT payout resource lock release failed")
 
 
 @celery.task()
