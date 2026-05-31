@@ -91,6 +91,7 @@ class ResourceProviderConfigTests(unittest.TestCase):
         )
 
         self.assertTrue(settings.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED)
+        self.assertEqual(settings.TRON_USDT_PAYOUT_QUEUE, "tron_usdt_fee_payouts")
         self.assertEqual(settings.TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC, 900)
         self.assertEqual(settings.TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC, 900)
 

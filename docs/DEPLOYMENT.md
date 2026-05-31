@@ -19,11 +19,17 @@ Use the official SHKeeper deployment model:
 - re:Fee or ProfeeX as the TRC20 energy provider
 - ProfeeX as the onetime-wallet bandwidth provider
 
-The chart runs the TRON sidecar as one pod with three containers:
+The base chart runs the TRON sidecar as one pod with three containers:
 
 - `app`: `gunicorn run:server`
 - `tasks`: `celery -A celery_worker.celery worker ...`
 - `redis`: local Redis for the sidecar
+
+When `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true`, run one additional
+Celery worker slot that consumes only `tron_usdt_fee_payouts` with
+`--concurrency=1 --prefetch-multiplier=1`. The normal `tasks` worker must keep
+consuming the default `celery` queue for scanner, sweep, AML, and non-USDT
+payout work.
 
 ## Local Release Build
 
@@ -194,6 +200,8 @@ tron_shkeeper:
     ENERGY_PROVIDER: profeex
     BANDWIDTH_PROVIDER: profeex
     PROFEEX: '{"api_key":"REPLACE_WITH_PROFEEX_API_KEY","energy_duration_label":"1h","bandwidth_duration_label":"1h","currency":"TRX","fixed_energy_order_amount":65000,"fixed_bandwidth_order_amount":350}'
+    TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED: "true"
+    TRON_USDT_PAYOUT_QUEUE: tron_usdt_fee_payouts
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT: "false"
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH: "true"
     USDT_MIN_TRANSFER_THRESHOLD: "0.5"
@@ -247,6 +255,7 @@ provisioning independently:
 | `PROFEEX` | empty | `ENERGY_PROVIDER=profeex` or `BANDWIDTH_PROVIDER=profeex` | ProfeeX JSON config with `api_key`, duration, currency, and fixed order settings. |
 | `REFEE_FIXED_ENERGY_ORDER_AMOUNT` | `65000` | Optional | Fixed re:Fee energy order amount. Use `0` to size from the fullnode estimate. |
 | `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED` | `false` | Optional | Enables fee-deposit resource estimation and provisioning before single USDT payout from the TRON fee wallet. Requires `PROFEEX` because ProfeeX provides the destination-specific USDT energy estimate. |
+| `TRON_USDT_PAYOUT_QUEUE` | `tron_usdt_fee_payouts` | Optional | Dedicated Celery queue for single USDT payouts from the fee wallet. The queue must have exactly one worker slot. |
 | `TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC` | `900` | Optional | Redis lock TTL for serializing single USDT payout resource provisioning and transfer. |
 | `TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC` | `900` | Optional | Maximum time a concurrent single USDT payout task waits for the resource lock before failing. |
 
@@ -263,10 +272,26 @@ energy as sufficient to avoid duplicate fixed rentals.
 does not rent bandwidth when the onetime wallet already has enough bandwidth.
 
 When `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true`, single USDT payouts
-stay on the default Celery queue. The task uses a Redis lock around
-`ensure fee-deposit resources -> transfer` so concurrent API payouts do not
-create overlapping provider orders. Do not move these tasks to a custom queue
-unless a dedicated worker listens to that queue.
+are routed to `TRON_USDT_PAYOUT_QUEUE`. A dedicated worker for this queue is
+the primary ordering mechanism; the task also uses a Redis lock around
+`ensure fee-deposit resources -> transfer` as a defensive guard against worker
+misconfiguration. Do not enable the feature flag until a dedicated single-slot
+worker consumes this queue.
+
+Dedicated worker command:
+
+```bash
+celery -A celery_worker.celery worker -E --loglevel=info \
+  -Q tron_usdt_fee_payouts --concurrency=1 --prefetch-multiplier=1 \
+  -n tron-usdt-payouts@%h
+```
+
+The normal worker should consume the default queue explicitly when the payout
+worker is split out:
+
+```bash
+celery -A celery_worker.celery worker -E --loglevel=info -Q celery
+```
 
 Do not use the old unshipped names `ENERGY_SOURCE` or `REFEE_RENT_BANDWIDTH` in
 this build.

@@ -377,7 +377,7 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
 
         self.assertEqual(result, {"fee": "0", "resource_quote": {"submit_ready": True}})
 
-    def test_api_keeps_usdt_single_chain_on_default_queue_when_enabled(self):
+    def test_api_routes_usdt_single_chain_to_dedicated_queue_when_enabled(self):
         payout_module = load_payout_module()
 
         calls = []
@@ -386,6 +386,7 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         original_payout_task = payout_module.payout_task
         payout_module.config = SimpleNamespace(
             TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
+            TRON_USDT_PAYOUT_QUEUE="tron_usdt_fee_payouts",
         )
         payout_module.prepare_payout = SimpleNamespace(
             s=lambda *args: FakeSignature("prepare", args, calls)
@@ -410,8 +411,14 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         prepare_sig, execute_sig = calls[0]
         self.assertEqual(prepare_sig.args, (DESTINATION, Decimal("1.25"), "USDT"))
         self.assertEqual(execute_sig.args, ("USDT",))
-        self.assertEqual(prepare_sig.options, {})
-        self.assertEqual(execute_sig.options, {})
+        self.assertEqual(
+            prepare_sig.options,
+            {"queue": "tron_usdt_fee_payouts"},
+        )
+        self.assertEqual(
+            execute_sig.options,
+            {"queue": "tron_usdt_fee_payouts"},
+        )
 
 
 if __name__ == "__main__":

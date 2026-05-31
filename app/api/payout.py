@@ -114,6 +114,12 @@ def payout(to, amount):
 
     prepare_sig = prepare_payout.s(to, amount, g.symbol)
     execute_sig = payout_task.s(g.symbol)
+    if (
+        config.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED
+        and g.symbol == "USDT"
+    ):
+        prepare_sig = prepare_sig.set(queue=config.TRON_USDT_PAYOUT_QUEUE)
+        execute_sig = execute_sig.set(queue=config.TRON_USDT_PAYOUT_QUEUE)
     task = (prepare_sig | execute_sig).apply_async()
     return {"task_id": task.id}
 

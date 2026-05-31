@@ -24,6 +24,17 @@ gunicorn run:server
 celery -A celery_worker.celery worker -E --loglevel=info
 ```
 
+When `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true`, run a dedicated
+single-slot worker for USDT payout resource provisioning in addition to the
+normal worker:
+
+```bash
+celery -A celery_worker.celery worker -E --loglevel=info -Q celery
+celery -A celery_worker.celery worker -E --loglevel=info \
+  -Q tron_usdt_fee_payouts --concurrency=1 --prefetch-multiplier=1 \
+  -n tron-usdt-payouts@%h
+```
+
 ## Resource Providers
 
 TRC20 sweeps need TRON energy. The sidecar supports three energy providers:
