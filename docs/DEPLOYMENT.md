@@ -341,6 +341,8 @@ python3 - <<'PY'
 import copy
 import json
 
+PAYOUT_QUEUE = "tron_usdt_fee_payouts"
+
 with open("/tmp/tron-shkeeper-deployment.json", encoding="utf-8") as fh:
     deployment = json.load(fh)
 
@@ -393,7 +395,7 @@ set_container_command(payouts, [
     "-E",
     "--loglevel=info",
     "-Q",
-    "tron_usdt_fee_payouts",
+    PAYOUT_QUEUE,
     "--concurrency=1",
     "--prefetch-multiplier=1",
     "-n",
@@ -423,6 +425,9 @@ The worker must be in the same pod because it uses the pod-local Redis broker.
 Do not set `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true` or allow live
 TRON USDT payouts until the pod reaches `4/4 Running` and the
 `tron-usdt-payouts` logs show Celery ready.
+If `TRON_USDT_PAYOUT_QUEUE` is overridden from the default
+`tron_usdt_fee_payouts`, set `PAYOUT_QUEUE` in the patch script to the same
+queue name.
 
 Do not use the old unshipped names `ENERGY_SOURCE` or `REFEE_RENT_BANDWIDTH` in
 this build.
