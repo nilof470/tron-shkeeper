@@ -347,34 +347,45 @@ with open("/tmp/tron-shkeeper-deployment.json", encoding="utf-8") as fh:
 containers = deployment["spec"]["template"]["spec"]["containers"]
 tasks = next(container for container in containers if container["name"] == "tasks")
 
-def with_queue(args, queue):
-    if not isinstance(args, list):
-        raise TypeError("tasks container args must be a list")
-    if "worker" not in args:
-        raise RuntimeError("tasks container args must contain the celery worker command")
+def container_command(container):
+    command = container.get("command") or []
+    args = container.get("args") or []
+    if not isinstance(command, list) or not isinstance(args, list):
+        raise TypeError("container command and args must be lists")
+    return command + args
 
-    updated_args = []
+def set_container_command(container, command):
+    container["command"] = command
+    container.pop("args", None)
+
+def with_queue(command, queue):
+    if "worker" not in command:
+        raise RuntimeError("tasks container must contain the celery worker command")
+
+    updated_command = []
     index = 0
-    while index < len(args):
-        arg = args[index]
+    while index < len(command):
+        arg = command[index]
         if arg in ("-Q", "--queues"):
             index += 2
             continue
         if arg.startswith("-Q=") or arg.startswith("--queues="):
             index += 1
             continue
-        updated_args.append(arg)
+        updated_command.append(arg)
         index += 1
 
-    return updated_args + ["-Q", queue]
+    return updated_command + ["-Q", queue]
 
 tasks = copy.deepcopy(tasks)
-tasks["args"] = with_queue(tasks.get("args", []), "celery")
+set_container_command(
+    tasks,
+    with_queue(container_command(tasks), "celery"),
+)
 
 payouts = copy.deepcopy(tasks)
 payouts["name"] = "tron-usdt-payouts"
-payouts["command"] = ["celery"]
-payouts["args"] = [
+set_container_command(payouts, [
     "-A",
     "celery_worker.celery",
     "worker",
@@ -386,7 +397,7 @@ payouts["args"] = [
     "--prefetch-multiplier=1",
     "-n",
     "tron-usdt-payouts@%h",
-]
+])
 
 updated = []
 for container in containers:
@@ -450,7 +461,7 @@ Expected core pods:
 mariadb                 1/1 Running
 shkeeper-deployment     1/1 Running
 tron-shkeeper           3/3 Running  # base chart
-tron-shkeeper           4/4 Running  # with TRON USDT payout resources enabled
+tron-shkeeper           4/4 Running  # with dedicated payout worker container
 ```
 
 The official chart can leave old failed `create-db-bitcoin-shkeeper` retry pods
