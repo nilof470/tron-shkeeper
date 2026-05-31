@@ -26,10 +26,15 @@ The base chart runs the TRON sidecar as one pod with three containers:
 - `redis`: local Redis for the sidecar
 
 When `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true`, run one additional
-Celery worker slot that consumes only `tron_usdt_fee_payouts` with
-`--concurrency=1 --prefetch-multiplier=1`. The normal `tasks` worker must keep
-consuming the default `celery` queue for scanner, sweep, AML, and non-USDT
-payout work.
+Celery worker container in the same `tron-shkeeper` pod. It consumes only
+`tron_usdt_fee_payouts` with `--concurrency=1 --prefetch-multiplier=1`. The
+normal `tasks` worker must keep consuming the default `celery` queue for
+scanner, sweep, AML, and non-USDT payout work.
+
+Do not run this payout worker as a separate Deployment while `REDIS_HOST` points
+to `localhost`: the sidecar Redis is pod-local, so a separate pod would connect
+to a different Redis instance or fail to connect. Use a separate Deployment only
+if `REDIS_HOST` is changed to a shared Redis service.
 
 ## Local Release Build
 
@@ -293,6 +298,96 @@ worker is split out:
 celery -A celery_worker.celery worker -E --loglevel=info -Q celery
 ```
 
+### Dedicated USDT payout worker container
+
+The `vsys-host/shkeeper` chart used by this runbook starts with the `app`,
+`tasks`, and `redis` containers. If the chart values or a Helm post-renderer can
+add an extra container, make the final `tron-shkeeper` pod contain a fourth
+container named `tron-usdt-payouts` that is equivalent to `tasks` except for the
+Celery command:
+
+```bash
+celery -A celery_worker.celery worker -E --loglevel=info \
+  -Q tron_usdt_fee_payouts --concurrency=1 --prefetch-multiplier=1 \
+  -n tron-usdt-payouts@%h
+```
+
+The `tasks` container should consume only the default queue:
+
+```bash
+celery -A celery_worker.celery worker -E --loglevel=info -Q celery
+```
+
+If the chart cannot model the extra container directly, apply this Kubernetes
+patch immediately after every `helm install` and `helm upgrade` before allowing
+USDT payouts:
+
+```bash
+kubectl -n shkeeper get deployment tron-shkeeper -o json \
+  > /tmp/tron-shkeeper-deployment.json
+
+python3 - <<'PY'
+import copy
+import json
+
+with open("/tmp/tron-shkeeper-deployment.json", encoding="utf-8") as fh:
+    deployment = json.load(fh)
+
+containers = deployment["spec"]["template"]["spec"]["containers"]
+tasks = next(container for container in containers if container["name"] == "tasks")
+
+tasks = copy.deepcopy(tasks)
+tasks["command"] = ["celery"]
+tasks["args"] = [
+    "-A",
+    "celery_worker.celery",
+    "worker",
+    "-E",
+    "--loglevel=info",
+    "-Q",
+    "celery",
+]
+
+payouts = copy.deepcopy(tasks)
+payouts["name"] = "tron-usdt-payouts"
+payouts["args"] = [
+    "-A",
+    "celery_worker.celery",
+    "worker",
+    "-E",
+    "--loglevel=info",
+    "-Q",
+    "tron_usdt_fee_payouts",
+    "--concurrency=1",
+    "--prefetch-multiplier=1",
+    "-n",
+    "tron-usdt-payouts@%h",
+]
+
+updated = []
+for container in containers:
+    if container["name"] == "tasks":
+        updated.append(tasks)
+    elif container["name"] != "tron-usdt-payouts":
+        updated.append(container)
+updated.append(payouts)
+
+with open("/tmp/tron-usdt-payout-worker-patch.json", "w", encoding="utf-8") as fh:
+    json.dump({"spec": {"template": {"spec": {"containers": updated}}}}, fh)
+PY
+
+kubectl -n shkeeper patch deployment tron-shkeeper --type=merge \
+  -p "$(cat /tmp/tron-usdt-payout-worker-patch.json)"
+
+kubectl rollout status deployment/tron-shkeeper -n shkeeper
+kubectl get pods -n shkeeper
+```
+
+The worker must be in the same pod because it uses the pod-local Redis broker.
+Do not enable `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true` in a live
+environment until the pod reaches `4/4 Running` and the `tron-usdt-payouts` logs
+show Celery ready.
+
 Do not use the old unshipped names `ENERGY_SOURCE` or `REFEE_RENT_BANDWIDTH` in
 this build.
 
@@ -330,7 +425,8 @@ Expected core pods:
 ```text
 mariadb                 1/1 Running
 shkeeper-deployment     1/1 Running
-tron-shkeeper           3/3 Running
+tron-shkeeper           3/3 Running  # base chart
+tron-shkeeper           4/4 Running  # with TRON USDT payout resources enabled
 ```
 
 The official chart can leave old failed `create-db-bitcoin-shkeeper` retry pods
@@ -370,6 +466,7 @@ Verify the TRON sidecar received the key:
 ```bash
 kubectl logs -n shkeeper deployment/tron-shkeeper -c app --tail=80
 kubectl logs -n shkeeper deployment/tron-shkeeper -c tasks --tail=80
+kubectl logs -n shkeeper deployment/tron-shkeeper -c tron-usdt-payouts --tail=80
 ```
 
 Expected lines:
@@ -493,6 +590,11 @@ helm upgrade -f /root/shkeeper-values.yaml shkeeper vsys-host/shkeeper
 kubectl rollout status deployment/tron-shkeeper -n shkeeper
 ```
 
+If `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true` and the chart does not
+own the `tron-usdt-payouts` container in values, reapply the dedicated worker
+patch from this runbook after the Helm upgrade. A plain Helm upgrade can restore
+the base `3/3` pod shape and leave `tron_usdt_fee_payouts` unconsumed.
+
 Verify the deployed image:
 
 ```bash
@@ -504,6 +606,7 @@ Expected image output shape:
 
 ```text
 ghcr.io/nilof470/tron-shkeeper:TAG ghcr.io/nilof470/tron-shkeeper:TAG redis:7
+ghcr.io/nilof470/tron-shkeeper:TAG ghcr.io/nilof470/tron-shkeeper:TAG redis:7 ghcr.io/nilof470/tron-shkeeper:TAG
 ```
 
 ## Useful Diagnostics
@@ -523,6 +626,7 @@ Logs:
 kubectl logs -n shkeeper deployment/shkeeper-deployment --tail=100
 kubectl logs -n shkeeper deployment/tron-shkeeper -c app --tail=120
 kubectl logs -n shkeeper deployment/tron-shkeeper -c tasks --tail=120
+kubectl logs -n shkeeper deployment/tron-shkeeper -c tron-usdt-payouts --tail=120
 ```
 
 Sidecar API health:
