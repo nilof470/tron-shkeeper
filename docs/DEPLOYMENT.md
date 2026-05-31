@@ -289,7 +289,8 @@ the primary ordering mechanism; the task also uses a Redis lock around
 misconfiguration. Do not enable the feature flag until a dedicated single-slot
 worker consumes this queue.
 
-Dedicated worker command:
+Dedicated worker command, using the same queue value as
+`TRON_USDT_PAYOUT_QUEUE`:
 
 ```bash
 celery -A celery_worker.celery worker -E --loglevel=info \
@@ -313,7 +314,7 @@ The `vsys-host/shkeeper` chart used by this runbook starts with the `app`,
 `tasks`, and `redis` containers. If the chart values or a Helm post-renderer can
 add an extra container, make the final `tron-shkeeper` pod contain a fourth
 container named `tron-usdt-payouts` that is equivalent to `tasks` except for the
-Celery command:
+Celery command. The `-Q` value must match `TRON_USDT_PAYOUT_QUEUE`:
 
 ```bash
 celery -A celery_worker.celery worker -E --loglevel=info \
