@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from decimal import Decimal
 import importlib
 import sqlite3
@@ -105,6 +106,7 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         original_config = tasks.config
         original_wallet = tasks.Wallet
         original_helper = tasks.ensure_fee_deposit_resources_for_usdt_payout
+        original_lock = tasks.usdt_payout_resource_lock
         original_post_results = tasks.post_payout_results
         task_globals = tasks.payout.run.__globals__
         original_globals_wallet = task_globals["Wallet"]
@@ -112,6 +114,7 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         original_globals_helper = task_globals[
             "ensure_fee_deposit_resources_for_usdt_payout"
         ]
+        original_globals_lock = task_globals["usdt_payout_resource_lock"]
         original_globals_post_results = task_globals["post_payout_results"]
         tasks.config = SimpleNamespace(
             TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=enabled,
@@ -129,6 +132,16 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
             events.append(("ensure", destination, amount, tron_client))
 
         tasks.ensure_fee_deposit_resources_for_usdt_payout = fake_helper
+
+        @contextmanager
+        def fake_lock():
+            events.append(("lock_enter",))
+            try:
+                yield
+            finally:
+                events.append(("lock_exit",))
+
+        tasks.usdt_payout_resource_lock = fake_lock
         posted = []
         tasks.post_payout_results = SimpleNamespace(
             delay=lambda results, symbol: posted.append((results, symbol))
@@ -136,18 +149,21 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         task_globals["Wallet"] = fake_wallet_factory
         task_globals["config"] = tasks.config
         task_globals["ensure_fee_deposit_resources_for_usdt_payout"] = fake_helper
+        task_globals["usdt_payout_resource_lock"] = fake_lock
         task_globals["post_payout_results"] = tasks.post_payout_results
 
         def restore():
             tasks.config = original_config
             tasks.Wallet = original_wallet
             tasks.ensure_fee_deposit_resources_for_usdt_payout = original_helper
+            tasks.usdt_payout_resource_lock = original_lock
             tasks.post_payout_results = original_post_results
             task_globals["Wallet"] = original_globals_wallet
             task_globals["config"] = original_globals_config
             task_globals["ensure_fee_deposit_resources_for_usdt_payout"] = (
                 original_globals_helper
             )
+            task_globals["usdt_payout_resource_lock"] = original_globals_lock
             task_globals["post_payout_results"] = original_globals_post_results
 
         return events, posted, restore
@@ -198,8 +214,10 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         self.assertEqual(
             events,
             [
+                ("lock_enter",),
                 ("ensure", DESTINATION, Decimal("1.25"), "tron-client"),
                 ("transfer", DESTINATION, Decimal("1.25")),
+                ("lock_exit",),
             ],
         )
         self.assertEqual(result[0]["status"], "success")
@@ -228,8 +246,10 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         finally:
             restore()
 
-        self.assertEqual(events[0][0], "ensure")
-        self.assertEqual(events[1][0], "transfer")
+        self.assertEqual(events[0][0], "lock_enter")
+        self.assertEqual(events[1][0], "ensure")
+        self.assertEqual(events[2][0], "transfer")
+        self.assertEqual(events[3][0], "lock_exit")
         self.assertEqual(posted, [])
 
     def test_payout_does_not_call_resource_helper_for_non_usdt_path(self):
@@ -280,7 +300,7 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
 
         self.assertEqual(result, {"fee": "0", "resource_quote": {"submit_ready": True}})
 
-    def test_api_routes_usdt_single_chain_to_dedicated_queue_when_enabled(self):
+    def test_api_keeps_usdt_single_chain_on_default_queue_when_enabled(self):
         payout_module = load_payout_module()
 
         calls = []
@@ -289,7 +309,6 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         original_payout_task = payout_module.payout_task
         payout_module.config = SimpleNamespace(
             TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
-            TRON_USDT_PAYOUT_QUEUE="tron_usdt_fee_payouts",
         )
         payout_module.prepare_payout = SimpleNamespace(
             s=lambda *args: FakeSignature("prepare", args, calls)
@@ -314,14 +333,8 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         prepare_sig, execute_sig = calls[0]
         self.assertEqual(prepare_sig.args, (DESTINATION, Decimal("1.25"), "USDT"))
         self.assertEqual(execute_sig.args, ("USDT",))
-        self.assertEqual(
-            prepare_sig.options,
-            {"queue": "tron_usdt_fee_payouts"},
-        )
-        self.assertEqual(
-            execute_sig.options,
-            {"queue": "tron_usdt_fee_payouts"},
-        )
+        self.assertEqual(prepare_sig.options, {})
+        self.assertEqual(execute_sig.options, {})
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import collections
 import concurrent
+from contextlib import contextmanager
 from contextlib import closing
 import datetime
 import decimal
@@ -17,6 +18,8 @@ from tronpy.tron import current_timestamp
 from tronpy.abi import trx_abi
 import tronpy.exceptions
 import requests
+import redis
+import redis.exceptions
 from sqlmodel import Session, select
 
 from app.schemas import KeyType
@@ -38,6 +41,26 @@ from .payout_resources import ensure_fee_deposit_resources_for_usdt_payout
 from .resource_providers import get_bandwidth_provider, get_energy_provider
 from .logging import logger
 from .wallet_encryption import wallet_encryption
+
+
+@contextmanager
+def usdt_payout_resource_lock():
+    client = redis.Redis.from_url(f"redis://{config.REDIS_HOST}")
+    lock = client.lock(
+        "tron_usdt_fee_payout_resources",
+        timeout=config.TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC,
+        blocking_timeout=config.TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC,
+        thread_local=False,
+    )
+    if not lock.acquire(blocking=True):
+        raise Exception("Timed out waiting for TRON USDT payout resource lock")
+    try:
+        yield
+    finally:
+        try:
+            lock.release()
+        except redis.exceptions.LockError:
+            logger.warning("TRON USDT payout resource lock was already released")
 
 
 @celery.task()
@@ -84,14 +107,15 @@ def payout(steps, symbol):
         payout_results = []
         for step in steps:
             if step.get("ensure_usdt_payout_resources"):
-                ensure_fee_deposit_resources_for_usdt_payout(
-                    step["dst"],
-                    step["amount"],
-                    tron_client=wallet.client,
-                )
-                result = wallet.transfer(step["dst"], step["amount"])
-                if result.get("status") != "success":
-                    raise Exception(f"USDT payout transfer failed: {result}")
+                with usdt_payout_resource_lock():
+                    ensure_fee_deposit_resources_for_usdt_payout(
+                        step["dst"],
+                        step["amount"],
+                        tron_client=wallet.client,
+                    )
+                    result = wallet.transfer(step["dst"], step["amount"])
+                    if result.get("status") != "success":
+                        raise Exception(f"USDT payout transfer failed: {result}")
                 payout_results.append(result)
             else:
                 payout_results.append(wallet.transfer(step["dst"], step["amount"]))

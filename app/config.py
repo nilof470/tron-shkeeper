@@ -78,7 +78,8 @@ class Settings(BaseSettings):
     PROFEEX: Json[ProfeeXConfig] | None = None
     REFEE_FIXED_ENERGY_ORDER_AMOUNT: int = Field(65_000, ge=0)
     TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED: bool = False
-    TRON_USDT_PAYOUT_QUEUE: str = "tron_usdt_fee_payouts"
+    TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC: int = Field(900, ge=1)
+    TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC: int = Field(900, ge=0)
     PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_ATTEMPTS: int = Field(3, ge=1)
     PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_SLEEP_SEC: float = Field(1.0, ge=0)
     # Voting

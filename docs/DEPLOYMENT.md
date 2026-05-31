@@ -246,6 +246,9 @@ provisioning independently:
 | `REFEE` | empty | `ENERGY_PROVIDER=refee` or `BANDWIDTH_PROVIDER=refee` | re:Fee JSON config with `api_key` and optional duration/order settings. |
 | `PROFEEX` | empty | `ENERGY_PROVIDER=profeex` or `BANDWIDTH_PROVIDER=profeex` | ProfeeX JSON config with `api_key`, duration, currency, and fixed order settings. |
 | `REFEE_FIXED_ENERGY_ORDER_AMOUNT` | `65000` | Optional | Fixed re:Fee energy order amount. Use `0` to size from the fullnode estimate. |
+| `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED` | `false` | Optional | Enables fee-deposit resource estimation and provisioning before single USDT payout from the TRON fee wallet. Requires `PROFEEX` because ProfeeX provides the destination-specific USDT energy estimate. |
+| `TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC` | `900` | Optional | Redis lock TTL for serializing single USDT payout resource provisioning and transfer. |
+| `TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC` | `900` | Optional | Maximum time a concurrent single USDT payout task waits for the resource lock before failing. |
 
 `BANDWIDTH_PROVIDER=disabled` is the old no-rental behavior: the sidecar uses
 only bandwidth already available on the onetime wallet. If there is not enough
@@ -258,6 +261,12 @@ energy as sufficient to avoid duplicate fixed rentals.
 
 `BANDWIDTH_PROVIDER=profeex` uses ordinary ProfeeX bandwidth delegation. It
 does not rent bandwidth when the onetime wallet already has enough bandwidth.
+
+When `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true`, single USDT payouts
+stay on the default Celery queue. The task uses a Redis lock around
+`ensure fee-deposit resources -> transfer` so concurrent API payouts do not
+create overlapping provider orders. Do not move these tasks to a custom queue
+unless a dedicated worker listens to that queue.
 
 Do not use the old unshipped names `ENERGY_SOURCE` or `REFEE_RENT_BANDWIDTH` in
 this build.
