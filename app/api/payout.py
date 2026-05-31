@@ -7,6 +7,10 @@ import tronpy
 
 from .. import celery
 from ..config import config
+from ..payout_resources import (
+    PayoutResourceError,
+    estimate_fee_deposit_resources_for_usdt_payout,
+)
 from ..tasks import payout as payout_task
 from ..tasks import prepare_payout, prepare_multipayout
 from . import api
@@ -16,6 +20,30 @@ from ..logging import logger
 
 @api.post("/calc-tx-fee/<decimal:amount>")
 def calc_tx_fee(amount):
+    destination = request.args.get("address")
+    if (
+        config.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED
+        and g.symbol == "USDT"
+        and destination
+    ):
+        try:
+            quote = estimate_fee_deposit_resources_for_usdt_payout(
+                destination,
+                amount,
+            )
+        except PayoutResourceError as exc:
+            return {
+                "status": "error",
+                "code": exc.code or "PAYOUT_RESOURCE_UNAVAILABLE",
+                "message": str(exc),
+            }, 503
+        except Exception as exc:
+            return {
+                "status": "error",
+                "code": "INVALID_DESTINATION",
+                "message": str(exc),
+            }, 400
+        return {"fee": "0", "resource_quote": quote.to_dict()}
     return {"fee": config.TX_FEE}
 
 
@@ -77,9 +105,23 @@ def multipayout():
 
 @api.post("/payout/<to>/<decimal:amount>")
 def payout(to, amount):
-    task = (
-        prepare_payout.s(to, amount, g.symbol) | payout_task.s(g.symbol)
-    ).apply_async()
+    try:
+        tronpy.keys.to_base58check_address(to)
+    except Exception as e:
+        raise Exception(f"Bad destination address: {e}")
+    if amount <= 0:
+        raise Exception("Payout amount should be a positive number")
+
+    prepare_sig = prepare_payout.s(to, amount, g.symbol)
+    execute_sig = payout_task.s(g.symbol)
+    if (
+        config.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED
+        and g.symbol == "USDT"
+    ):
+        prepare_sig = prepare_sig.set(queue=config.TRON_USDT_PAYOUT_QUEUE)
+        execute_sig = execute_sig.set(queue=config.TRON_USDT_PAYOUT_QUEUE)
+
+    task = (prepare_sig | execute_sig).apply_async()
     return {"task_id": task.id}
 
 

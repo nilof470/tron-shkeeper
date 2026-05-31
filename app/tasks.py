@@ -34,6 +34,7 @@ from .utils import (
     skip_if_running,
 )
 from .connection_manager import ConnectionManager
+from .payout_resources import ensure_fee_deposit_resources_for_usdt_payout
 from .resource_providers import get_bandwidth_provider, get_energy_provider
 from .logging import logger
 from .wallet_encryption import wallet_encryption
@@ -50,6 +51,10 @@ def prepare_payout(dest, amount, symbol):
         {
             "dst": dest,
             "amount": decimal.Decimal(amount),
+            "ensure_usdt_payout_resources": (
+                config.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED
+                and symbol == "USDT"
+            ),
         }
     )
     return steps
@@ -75,12 +80,28 @@ def prepare_multipayout(payout_list, symbol):
 @celery.task()
 def payout(steps, symbol):
     wallet = Wallet(symbol)
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=config.CONCURRENT_MAX_WORKERS
-    ) as executor:
-        payout_results = list(
-            executor.map(lambda x: wallet.transfer(x["dst"], x["amount"]), steps)
-        )
+    if any(step.get("ensure_usdt_payout_resources") for step in steps):
+        payout_results = []
+        for step in steps:
+            if step.get("ensure_usdt_payout_resources"):
+                ensure_fee_deposit_resources_for_usdt_payout(
+                    step["dst"],
+                    step["amount"],
+                    tron_client=wallet.client,
+                )
+                result = wallet.transfer(step["dst"], step["amount"])
+                if result.get("status") != "success":
+                    raise Exception(f"USDT payout transfer failed: {result}")
+                payout_results.append(result)
+            else:
+                payout_results.append(wallet.transfer(step["dst"], step["amount"]))
+    else:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=config.CONCURRENT_MAX_WORKERS
+        ) as executor:
+            payout_results = list(
+                executor.map(lambda x: wallet.transfer(x["dst"], x["amount"]), steps)
+            )
     post_payout_results.delay(payout_results, symbol)
     return payout_results
 
