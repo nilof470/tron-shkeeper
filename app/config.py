@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     REFEE: Json[RefeeConfig] | None = None
     PROFEEX: Json[ProfeeXConfig] | None = None
     REFEE_FIXED_ENERGY_ORDER_AMOUNT: int = Field(65_000, ge=0)
+    TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED: bool = False
+    TRON_USDT_PAYOUT_QUEUE: str = "tron_usdt_fee_payouts"
+    PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_ATTEMPTS: int = Field(3, ge=1)
+    PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_SLEEP_SEC: float = Field(1.0, ge=0)
     # Voting
     SR_VOTING: bool = False
     SR_VOTES: Json[List[SrVote]] | None = None
@@ -195,6 +199,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "REFEE_FIXED_ENERGY_ORDER_AMOUNT must be 0 or greater than or "
                 "equal to REFEE.min_energy_order_amount"
+            )
+        if (
+            self.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED
+            and self.PROFEEX is None
+        ):
+            raise ValueError(
+                "PROFEEX must be configured when "
+                "TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true"
             )
         return self
 

@@ -9,6 +9,32 @@ from ..logging import logger
 from ..utils import get_available_energy, has_free_bw
 
 
+TEMPORARY_ERROR_CODES = {
+    "DUPLICATE_REQUEST",
+    "RATE_LIMIT_EXCEEDED",
+    "SERVICE_UNAVAILABLE",
+    "REQUEST_TIMEOUT",
+}
+OPERATIONAL_ERROR_CODES = {
+    "INSUFFICIENT_BALANCE",
+    "PROCESSING_FAILED",
+    "CONFIGURATION_ERROR",
+    "UNKNOWN_ERROR",
+}
+VALIDATION_ERROR_CODES = {
+    "INVALID_ADDRESS",
+    "INVALID_PARAMETERS",
+}
+
+
+class ProfeeXOrderError(RuntimeError):
+    def __init__(self, resource_name, message, error_code=None, temporary=False):
+        super().__init__(message)
+        self.resource_name = resource_name
+        self.error_code = error_code
+        self.temporary = temporary
+
+
 class ProfeeXProvider(EnergyProvider, BandwidthProvider):
     REQUEST_TIMEOUT_SEC = 10
     PENDING_STATUSES = {"QUEUED", "PENDING", "PROCESSING"}
@@ -94,6 +120,51 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
             f"ProfeeX energy for {receiver} returns after rent expiration. "
             "Skipping undelegate."
         )
+
+    def estimate_usdt_transfer_fee(self, receiver_address: str) -> dict | None:
+        settings = config.PROFEEX
+        if settings is None:
+            logger.warning("PROFEEX config is missing. Cannot estimate USDT fee.")
+            return None
+
+        try:
+            response = requests.get(
+                self._url(settings, "/delegation/fee"),
+                params={"receiver_address": receiver_address},
+                headers=self._headers(settings),
+                timeout=self.REQUEST_TIMEOUT_SEC,
+            )
+        except requests.RequestException:
+            logger.exception("ProfeeX USDT fee estimate request failed")
+            return None
+
+        if response.status_code != 200:
+            logger.warning(
+                f"ProfeeX USDT fee estimate rejected with status "
+                f"{response.status_code}: {response.text}"
+            )
+            return None
+
+        try:
+            data = response.json()
+        except ValueError:
+            logger.exception("ProfeeX USDT fee estimate response is not valid JSON")
+            return None
+        if not isinstance(data, dict):
+            logger.warning(
+                f"ProfeeX USDT fee estimate response is not an object: {data}"
+            )
+            return None
+        if type(data.get("energy_required")) is not int:
+            logger.warning(f"ProfeeX USDT fee estimate has no energy_required: {data}")
+            return None
+        if type(data.get("is_new_address")) is not bool:
+            logger.warning(f"ProfeeX USDT fee estimate has no is_new_address flag: {data}")
+            return None
+        if "trx_burned" not in data:
+            logger.warning(f"ProfeeX USDT fee estimate has no trx_burned field: {data}")
+            return None
+        return data
 
     def acquire_bandwidth(self, receiver: str, bandwidth_required: int) -> bool:
         settings = config.PROFEEX
@@ -205,6 +276,18 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
         if "status" not in order:
             order["status"] = "PENDING"
         return task_id
+
+    def _order_error_from_order(
+        self, resource_name: str, order: dict
+    ) -> ProfeeXOrderError:
+        error_code = order.get("error_code")
+        details = order.get("details") or {}
+        message = (
+            details.get("error_message")
+            or f"ProfeeX {resource_name} order failed: {order}"
+        )
+        temporary = error_code in TEMPORARY_ERROR_CODES
+        return ProfeeXOrderError(resource_name, message, error_code, temporary)
 
     def _get_available_energy(self, tron_client, receiver: str, stage: str) -> int | None:
         try:

@@ -139,6 +139,93 @@ class ProfeeXBandwidthProviderTests(unittest.TestCase):
             ],
         )
 
+    def test_estimate_usdt_transfer_fee_uses_receiver_address_and_api_key(self):
+        from app.resource_providers import profeex
+        from app.resource_providers.profeex import ProfeeXProvider
+
+        gets = []
+
+        def fake_get(url, params, headers, timeout):
+            gets.append((url, params, headers, timeout))
+            return MockJsonResponse(
+                200,
+                {
+                    "energy_required": 64_300,
+                    "is_new_address": False,
+                    "trx_burned": "0",
+                },
+            )
+
+        original_get = profeex.requests.get
+        restore_config = self.patch_config(profeex)
+        try:
+            profeex.requests.get = fake_get
+            estimate = ProfeeXProvider().estimate_usdt_transfer_fee(
+                "TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7"
+            )
+        finally:
+            profeex.requests.get = original_get
+            restore_config()
+
+        self.assertEqual(estimate["energy_required"], 64_300)
+        self.assertEqual(
+            gets,
+            [
+                (
+                    "https://api.profeex.test/api/v1/delegation/fee",
+                    {"receiver_address": "TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7"},
+                    {"X-API-Key": "profeex-secret"},
+                    10,
+                )
+            ],
+        )
+
+    def test_estimate_usdt_transfer_fee_rejects_response_without_energy_required(self):
+        from app.resource_providers import profeex
+        from app.resource_providers.profeex import ProfeeXProvider
+
+        original_get = profeex.requests.get
+        restore_config = self.patch_config(profeex)
+        try:
+            profeex.requests.get = lambda *args, **kwargs: MockJsonResponse(
+                200,
+                {"is_new_address": False, "trx_burned": "0"},
+            )
+            estimate = ProfeeXProvider().estimate_usdt_transfer_fee(
+                "TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7"
+            )
+        finally:
+            profeex.requests.get = original_get
+            restore_config()
+
+        self.assertIsNone(estimate)
+
+    def test_order_error_marks_duplicate_request_temporary(self):
+        from app.resource_providers.profeex import ProfeeXProvider
+
+        error = ProfeeXProvider()._order_error_from_order(
+            "energy",
+            {
+                "error_code": "DUPLICATE_REQUEST",
+                "details": {"error_message": "delegation cooldown"},
+            },
+        )
+
+        self.assertEqual(error.error_code, "DUPLICATE_REQUEST")
+        self.assertTrue(error.temporary)
+        self.assertIn("delegation cooldown", str(error))
+
+    def test_order_error_marks_rate_limit_temporary(self):
+        from app.resource_providers.profeex import ProfeeXProvider
+
+        error = ProfeeXProvider()._order_error_from_order(
+            "energy",
+            {"error_code": "RATE_LIMIT_EXCEEDED"},
+        )
+
+        self.assertEqual(error.error_code, "RATE_LIMIT_EXCEEDED")
+        self.assertTrue(error.temporary)
+
     def test_skips_energy_order_when_fixed_threshold_is_already_available(self):
         from app.resource_providers import profeex
         from app.resource_providers.profeex import ProfeeXProvider

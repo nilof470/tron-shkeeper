@@ -76,6 +76,23 @@ class ResourceProviderConfigTests(unittest.TestCase):
         self.assertEqual(settings.PROFEEX.fixed_energy_order_amount, 65_000)
         self.assertEqual(settings.PROFEEX.fixed_bandwidth_order_amount, 350)
 
+    def test_usdt_payout_resource_provisioning_requires_profeex_estimator_config(self):
+        with self.assertRaisesRegex(
+            ValidationError,
+            "PROFEEX must be configured when "
+            "TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true",
+        ):
+            Settings(TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True)
+
+    def test_usdt_payout_resource_provisioning_is_valid_when_profeex_configured(self):
+        settings = Settings(
+            TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
+            PROFEEX='{"api_key":"secret"}',
+        )
+
+        self.assertTrue(settings.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED)
+        self.assertEqual(settings.TRON_USDT_PAYOUT_QUEUE, "tron_usdt_fee_payouts")
+
     def test_profeex_config_rejects_non_https_api_base_url(self):
         with self.assertRaises(ValidationError):
             ProfeeXConfig(
