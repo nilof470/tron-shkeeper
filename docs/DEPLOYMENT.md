@@ -205,7 +205,7 @@ tron_shkeeper:
     ENERGY_PROVIDER: profeex
     BANDWIDTH_PROVIDER: profeex
     PROFEEX: '{"api_key":"REPLACE_WITH_PROFEEX_API_KEY","energy_duration_label":"1h","bandwidth_duration_label":"1h","currency":"TRX","fixed_energy_order_amount":65000,"fixed_bandwidth_order_amount":350}'
-    TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED: "true"
+    TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED: "false"
     TRON_USDT_PAYOUT_QUEUE: tron_usdt_fee_payouts
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT: "false"
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH: "true"
@@ -246,6 +246,12 @@ Notes:
   should be swept. The TRC20 sweep check requires `balance > threshold`.
 - `TRX_MIN_TRANSFER_THRESHOLD` prevents sweeping activation dust. TRX sweep uses
   `balance >= threshold`, so use a value above dust, for example `1.01`.
+- Keep `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=false` for the first
+  install or upgrade. After the `tron-usdt-payouts` worker is deployed and
+  verified as `4/4 Running`, set it to `true`, run Helm again, immediately
+  reapply the worker patch if the chart does not own the fourth container, and
+  only then allow TRON USDT payouts. Keep payout traffic paused during this
+  second upgrade window.
 
 ### TRON resource provider environment variables
 
@@ -292,10 +298,13 @@ celery -A celery_worker.celery worker -E --loglevel=info \
 ```
 
 The normal worker should consume the default queue explicitly when the payout
-worker is split out:
+worker is split out. Preserve any existing periodic scheduler args, especially
+`-B` and `--schedule=/app/data/celerybeat-schedule`, because the chart runs
+Celery beat inside the `tasks` container.
 
 ```bash
-celery -A celery_worker.celery worker -E --loglevel=info -Q celery
+celery -A celery_worker.celery worker -E --loglevel=info \
+  -B --schedule=/app/data/celerybeat-schedule -Q celery
 ```
 
 ### Dedicated USDT payout worker container
@@ -312,10 +321,12 @@ celery -A celery_worker.celery worker -E --loglevel=info \
   -n tron-usdt-payouts@%h
 ```
 
-The `tasks` container should consume only the default queue:
+The `tasks` container should consume only the default queue while preserving
+Celery beat:
 
 ```bash
-celery -A celery_worker.celery worker -E --loglevel=info -Q celery
+celery -A celery_worker.celery worker -E --loglevel=info \
+  -B --schedule=/app/data/celerybeat-schedule -Q celery
 ```
 
 If the chart cannot model the extra container directly, apply this Kubernetes
@@ -336,20 +347,33 @@ with open("/tmp/tron-shkeeper-deployment.json", encoding="utf-8") as fh:
 containers = deployment["spec"]["template"]["spec"]["containers"]
 tasks = next(container for container in containers if container["name"] == "tasks")
 
+def with_queue(args, queue):
+    if not isinstance(args, list):
+        raise TypeError("tasks container args must be a list")
+    if "worker" not in args:
+        raise RuntimeError("tasks container args must contain the celery worker command")
+
+    updated_args = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in ("-Q", "--queues"):
+            index += 2
+            continue
+        if arg.startswith("-Q=") or arg.startswith("--queues="):
+            index += 1
+            continue
+        updated_args.append(arg)
+        index += 1
+
+    return updated_args + ["-Q", queue]
+
 tasks = copy.deepcopy(tasks)
-tasks["command"] = ["celery"]
-tasks["args"] = [
-    "-A",
-    "celery_worker.celery",
-    "worker",
-    "-E",
-    "--loglevel=info",
-    "-Q",
-    "celery",
-]
+tasks["args"] = with_queue(tasks.get("args", []), "celery")
 
 payouts = copy.deepcopy(tasks)
 payouts["name"] = "tron-usdt-payouts"
+payouts["command"] = ["celery"]
 payouts["args"] = [
     "-A",
     "celery_worker.celery",
@@ -384,9 +408,9 @@ kubectl get pods -n shkeeper
 ```
 
 The worker must be in the same pod because it uses the pod-local Redis broker.
-Do not enable `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true` in a live
-environment until the pod reaches `4/4 Running` and the `tron-usdt-payouts` logs
-show Celery ready.
+Do not set `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true` or allow live
+TRON USDT payouts until the pod reaches `4/4 Running` and the
+`tron-usdt-payouts` logs show Celery ready.
 
 Do not use the old unshipped names `ENERGY_SOURCE` or `REFEE_RENT_BANDWIDTH` in
 this build.
@@ -475,6 +499,7 @@ Expected lines:
 Wallet encryption is enabled, encryption key is set!
 Encryption settings are valid.
 celery@... ready.
+tron-usdt-payouts@... ready.
 ```
 
 ## Fee Deposit Wallet
