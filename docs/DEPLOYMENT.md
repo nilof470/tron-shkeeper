@@ -386,6 +386,7 @@ set_container_command(
 payouts = copy.deepcopy(tasks)
 payouts["name"] = "tron-usdt-payouts"
 set_container_command(payouts, [
+    "celery",
     "-A",
     "celery_worker.celery",
     "worker",
