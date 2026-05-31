@@ -26,6 +26,7 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
         account_resource: dict,
         *,
         minimum_energy_required: int | None = None,
+        strict_minimum_required: bool = False,
     ) -> bool:
         settings = config.REFEE
         if settings is None:
@@ -43,6 +44,8 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
                 fixed_order_amount - self.FIXED_ENERGY_ORDER_TOLERANCE,
                 0,
             )
+            if strict_minimum_required and minimum_energy_required is not None:
+                energy_required = max(energy_required, minimum_energy_required)
         else:
             energy_required = estimated_energy_required
         if fixed_order_amount > 0:

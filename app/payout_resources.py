@@ -199,6 +199,7 @@ def ensure_fee_deposit_resources_for_usdt_payout(
             quote.energy.deficit,
             account_resource,
             minimum_energy_required=quote.energy.required,
+            strict_minimum_required=True,
         ):
             raise PayoutResourceError(
                 "Energy provider failed to prepare resources",
@@ -231,12 +232,17 @@ def ensure_fee_deposit_resources_for_usdt_payout(
             amount,
             tron_client=client,
         )
-        if refreshed.energy.deficit == 0 and refreshed.bandwidth.deficit == 0:
+        if (
+            refreshed.submit_ready
+            and refreshed.energy.deficit == 0
+            and refreshed.bandwidth.deficit == 0
+        ):
             return refreshed
         if attempt + 1 < config.PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_ATTEMPTS:
             time.sleep(config.PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_SLEEP_SEC)
 
     raise PayoutResourceError(
-        "TRON USDT payout resources are still insufficient after provider provisioning",
-        code="RESOURCE_RECHECK_FAILED",
+        refreshed.blocking_reason
+        or "TRON USDT payout resources are still insufficient after provider provisioning",
+        code=refreshed.blocking_code or "RESOURCE_RECHECK_FAILED",
     )

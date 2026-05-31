@@ -19,6 +19,7 @@ class StakingEnergyProvider(EnergyProvider):
         account_resource: dict,
         *,
         minimum_energy_required: int | None = None,
+        strict_minimum_required: bool = False,
     ) -> bool:
         tron_client = self.tron_client or ConnectionManager.client()
         energy_delegator_priv, energy_delegator_pub = get_energy_delegator()

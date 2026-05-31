@@ -200,6 +200,66 @@ class ProfeeXBandwidthProviderTests(unittest.TestCase):
 
         self.assertIsNone(estimate)
 
+    def test_estimate_usdt_transfer_fee_rejects_negative_energy_required(self):
+        from app.resource_providers import profeex
+        from app.resource_providers.profeex import ProfeeXProvider
+
+        original_get = profeex.requests.get
+        restore_config = self.patch_config(profeex)
+        try:
+            profeex.requests.get = lambda *args, **kwargs: MockJsonResponse(
+                200,
+                {
+                    "energy_required": -1,
+                    "is_new_address": False,
+                    "trx_burned": "0",
+                },
+            )
+            estimate = ProfeeXProvider().estimate_usdt_transfer_fee(
+                "TY4ZLVFpNhpozeWYSqWpcQjv6vntfHnjA7"
+            )
+        finally:
+            profeex.requests.get = original_get
+            restore_config()
+
+        self.assertIsNone(estimate)
+
+    def test_strict_minimum_required_uses_estimate_as_energy_threshold(self):
+        from app.resource_providers import profeex
+        from app.resource_providers.profeex import ProfeeXProvider
+
+        client = SequencedEnergyTronClient(
+            [
+                {"EnergyLimit": 64_500, "EnergyUsed": 0},
+                {"EnergyLimit": 65_000, "EnergyUsed": 0},
+            ]
+        )
+        provider = ProfeeXProvider(tron_client=client)
+        posts = []
+
+        def fake_post(url, params, headers, timeout):
+            posts.append((url, params, headers, timeout))
+            return MockJsonResponse(202, {"task_id": "task-1", "status": "ACTIVE"})
+
+        original_post = profeex.requests.post
+        restore_config = self.patch_config(profeex)
+        try:
+            profeex.requests.post = fake_post
+            self.assertTrue(
+                provider.acquire_energy(
+                    "TADDR",
+                    821,
+                    {"EnergyLimit": 64_500, "EnergyUsed": 0},
+                    minimum_energy_required=65_000,
+                    strict_minimum_required=True,
+                )
+            )
+        finally:
+            profeex.requests.post = original_post
+            restore_config()
+
+        self.assertEqual(len(posts), 1)
+
     def test_order_error_marks_duplicate_request_temporary(self):
         from app.resource_providers.profeex import ProfeeXProvider
 

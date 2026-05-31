@@ -9,6 +9,7 @@ class EnergyProvider(Protocol):
         account_resource: dict,
         *,
         minimum_energy_required: int | None = None,
+        strict_minimum_required: bool = False,
     ) -> bool:
         """Make enough TRON energy available for receiver."""
 

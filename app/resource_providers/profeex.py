@@ -52,6 +52,7 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
         account_resource: dict,
         *,
         minimum_energy_required: int | None = None,
+        strict_minimum_required: bool = False,
     ) -> bool:
         settings = config.PROFEEX
         if settings is None:
@@ -62,6 +63,8 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
             settings.fixed_energy_order_amount - self.FIXED_ENERGY_ORDER_TOLERANCE,
             0,
         )
+        if strict_minimum_required and minimum_energy_required is not None:
+            threshold = max(threshold, minimum_energy_required)
         tron_client = self.tron_client or ConnectionManager.client()
         onetime_energy_available = self._get_available_energy(
             tron_client, receiver, "pre-order"
@@ -75,7 +78,7 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
             )
             return True
 
-        amount = settings.fixed_energy_order_amount
+        amount = max(settings.fixed_energy_order_amount, energy_to_provision)
         logger.info(
             f"Requesting ProfeeX energy rental for {receiver}: "
             f"{amount} energy for {settings.energy_duration_label}"
@@ -157,6 +160,11 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
             return None
         if type(data.get("energy_required")) is not int:
             logger.warning(f"ProfeeX USDT fee estimate has no energy_required: {data}")
+            return None
+        if data["energy_required"] < 0:
+            logger.warning(
+                f"ProfeeX USDT fee estimate has invalid energy_required: {data}"
+            )
             return None
         if type(data.get("is_new_address")) is not bool:
             logger.warning(f"ProfeeX USDT fee estimate has no is_new_address flag: {data}")
