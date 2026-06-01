@@ -63,6 +63,57 @@ def usdt_payout_resource_lock():
             logger.warning("TRON USDT payout resource lock release failed")
 
 
+def estimate_trc20_sweep_energy(
+    symbol,
+    provider,
+    receiver_address,
+    onetime_address,
+    contract_address,
+    tron_client,
+):
+    if symbol == "USDT" and config.ENERGY_PROVIDER == "profeex":
+        logger.info(
+            "Estimate the amount of energy needed to make USDT transfer via ProfeeX"
+        )
+        estimate = provider.estimate_usdt_transfer_fee(receiver_address)
+        if estimate is None:
+            logger.warning(
+                "Unable to estimate USDT transfer energy through ProfeeX. "
+                "Terminating transfer."
+            )
+            return None
+        energy_required = estimate["energy_required"]
+        logger.info(
+            "ProfeeX estimated amount of energy for USDT transfer is: "
+            f"{energy_required}. Details: {estimate}"
+        )
+        return energy_required
+
+    if symbol == "USDT" and config.ENERGY_PROVIDER == "refee":
+        energy_required = int(config.REFEE_FIXED_ENERGY_ORDER_AMOUNT)
+        if energy_required <= 0:
+            logger.warning(
+                "REFEE_FIXED_ENERGY_ORDER_AMOUNT must be greater than 0 for "
+                "USDT sweep energy provisioning. Terminating transfer."
+            )
+            return None
+        logger.info(
+            "Using fixed re:Fee amount as USDT sweep energy requirement: "
+            f"{energy_required}"
+        )
+        return energy_required
+
+    logger.info("Estimate the amount of energy needed to make transfer")
+    energy_required = tron_client.get_estimated_energy(
+        onetime_address,
+        contract_address,
+        "transfer(address,uint256)",
+        trx_abi.encode_single("(address,uint256)", (receiver_address, 42)).hex(),
+    )
+    logger.info(f"Estimated amount of energy for transfer is: {energy_required}")
+    return energy_required
+
+
 @celery.task()
 def prepare_payout(dest, amount, symbol):
     if (balance := Wallet(symbol).balance) < amount:
@@ -351,14 +402,16 @@ def transfer_trc20_from(onetime_acc, symbol):
         if not ensure_onetime_bandwidth(onetime_publ_key, tron_client):
             return
 
-        logger.info("Estimate the amount of energy needed to make transfer")
-        energy_needed = tron_client.get_estimated_energy(
+        energy_needed = estimate_trc20_sweep_energy(
+            symbol,
+            provider,
+            main_publ_key,
             onetime_publ_key,
             contract_address,
-            "transfer(address,uint256)",
-            trx_abi.encode_single("(address,uint256)", (main_publ_key, 42)).hex(),
+            tron_client,
         )
-        logger.info(f"Estimated amount of energy for transfer is: {energy_needed}")
+        if energy_needed is None:
+            return
 
         logger.info("Check the energy of onetime address")
 

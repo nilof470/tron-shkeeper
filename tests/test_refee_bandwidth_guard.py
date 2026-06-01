@@ -53,15 +53,26 @@ class SufficientBandwidthTronClient(FakeTronClient):
 class FakeProvider:
     def __init__(self):
         self.acquire_calls = 0
+        self.acquire_energy_calls = []
         self.acquire_bandwidth_calls = []
+        self.fee_estimate_calls = []
 
-    def acquire_energy(self, *_args, **_kwargs):
+    def acquire_energy(self, *args, **kwargs):
+        self.acquire_energy_calls.append((args, kwargs))
         self.acquire_calls += 1
         return False
 
     def acquire_bandwidth(self, receiver, bandwidth_required):
         self.acquire_bandwidth_calls.append((receiver, bandwidth_required))
         return True
+
+    def estimate_usdt_transfer_fee(self, receiver_address):
+        self.fee_estimate_calls.append(receiver_address)
+        return {
+            "energy_required": 64_285,
+            "is_new_address": False,
+            "trx_burned": "0",
+        }
 
 
 class FakeConfig:
@@ -71,6 +82,7 @@ class FakeConfig:
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT = False
     ENERGY_DELEGATION_MODE_ALLOW_ADDITIONAL_ENERGY_DELEGATION = False
     BANDWIDTH_PER_TRC20_TRANSFER_CALL = 346
+    REFEE_FIXED_ENERGY_ORDER_AMOUNT = 65_000
 
     def get_contract_address(self, symbol):
         self.last_contract_symbol = symbol
@@ -119,8 +131,7 @@ class OrderedEnergyProvider(FakeProvider):
 
     def acquire_energy(self, *_args, **_kwargs):
         self.events.append("energy")
-        self.acquire_calls += 1
-        return False
+        return super().acquire_energy(*_args, **_kwargs)
 
 
 class OrderedBandwidthProvider(FakeProvider):
@@ -237,7 +248,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
             [(onetime, FakeConfig.BANDWIDTH_PER_TRC20_TRANSFER_CALL)],
         )
         self.assertEqual(provider.acquire_calls, 1)
-        self.assertEqual(client.energy_estimate_calls, 1)
+        self.assertEqual(client.energy_estimate_calls, 0)
 
     def test_staking_energy_uses_separate_refee_bandwidth_provider(self):
         from app import tasks
@@ -371,7 +382,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(provider.acquire_bandwidth_calls, [])
         self.assertEqual(provider.acquire_calls, 1)
-        self.assertEqual(client.energy_estimate_calls, 1)
+        self.assertEqual(client.energy_estimate_calls, 0)
 
     def test_sweep_can_use_different_energy_and_bandwidth_providers(self):
         from app import tasks
@@ -420,7 +431,7 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
             [(onetime, MixedProviderConfig.BANDWIDTH_PER_TRC20_TRANSFER_CALL)],
         )
         self.assertEqual(energy_provider.acquire_calls, 1)
-        self.assertEqual(client.energy_estimate_calls, 1)
+        self.assertEqual(client.energy_estimate_calls, 0)
 
     def test_profeex_energy_provider_enters_provider_mode_and_rents_bandwidth_first(self):
         from app import tasks
@@ -466,8 +477,13 @@ class RefeeBandwidthGuardTests(unittest.TestCase):
             [(onetime, ProfeeXEnergyConfig.BANDWIDTH_PER_TRC20_TRANSFER_CALL)],
         )
         self.assertEqual(energy_provider.acquire_calls, 1)
-        self.assertEqual(client.energy_estimate_calls, 1)
+        args, kwargs = energy_provider.acquire_energy_calls[0]
+        self.assertEqual(args[0], onetime)
+        self.assertEqual(args[1], 64_285)
+        self.assertEqual(kwargs["minimum_energy_required"], 64_285)
+        self.assertEqual(client.energy_estimate_calls, 0)
         self.assertEqual(events, ["bandwidth", "energy"])
+        self.assertEqual(energy_provider.fee_estimate_calls, [fee_deposit])
 
     def test_profeex_energy_failure_does_not_use_refee_burn_fallback(self):
         from app import tasks

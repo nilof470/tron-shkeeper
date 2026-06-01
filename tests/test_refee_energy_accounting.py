@@ -14,6 +14,7 @@ class FakeConfig:
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT = False
     ENERGY_DELEGATION_MODE_ALLOW_ADDITIONAL_ENERGY_DELEGATION = False
     BANDWIDTH_PER_TRC20_TRANSFER_CALL = 346
+    REFEE_FIXED_ENERGY_ORDER_AMOUNT = 65_000
     TX_FEE_LIMIT = Decimal("50")
 
     def get_contract_address(self, _symbol):
@@ -198,8 +199,8 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
         self.assertEqual(len(provider.acquire_calls), 1)
         args, kwargs = provider.acquire_calls[0]
         self.assertEqual(args[0], ONETIME)
-        self.assertEqual(args[1], 40_000)
-        self.assertEqual(kwargs["minimum_energy_required"], 50_000)
+        self.assertEqual(args[1], 55_000)
+        self.assertEqual(kwargs["minimum_energy_required"], 65_000)
 
     def test_staking_acquires_missing_energy_when_no_delegated_accounts_exist(self):
         from app import tasks
@@ -252,8 +253,8 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(len(provider.acquire_calls), 1)
         args, kwargs = provider.acquire_calls[0]
-        self.assertEqual(args[1], 50_000)
-        self.assertEqual(kwargs["minimum_energy_required"], 50_000)
+        self.assertEqual(args[1], 65_000)
+        self.assertEqual(kwargs["minimum_energy_required"], 65_000)
 
     def test_failed_trc20_receipt_is_not_treated_as_successful_sweep(self):
         from app import tasks
