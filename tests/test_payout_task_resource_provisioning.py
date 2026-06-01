@@ -354,6 +354,7 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
 
         original_config = payout_module.config
         original_estimate = payout_module.estimate_fee_deposit_resources_for_usdt_payout
+        original_worker_ready = payout_module.usdt_payout_worker_ready
         payout_module.config = SimpleNamespace(
             TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
             TX_FEE=Decimal("40"),
@@ -361,6 +362,7 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         payout_module.estimate_fee_deposit_resources_for_usdt_payout = (
             lambda destination, amount: Quote()
         )
+        payout_module.usdt_payout_worker_ready = lambda: True
         app = Flask(__name__)
         try:
             with app.test_request_context(
@@ -374,8 +376,55 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
             payout_module.estimate_fee_deposit_resources_for_usdt_payout = (
                 original_estimate
             )
+            payout_module.usdt_payout_worker_ready = original_worker_ready
 
         self.assertEqual(result, {"fee": "0", "resource_quote": {"submit_ready": True}})
+
+    def test_calc_tx_fee_blocks_submission_when_payout_worker_is_missing(self):
+        payout_module = load_payout_module()
+
+        class Quote:
+            submit_ready = True
+
+            def to_dict(self):
+                return {
+                    "submit_ready": True,
+                    "blocking_code": None,
+                    "blocking_reason": None,
+                }
+
+        original_config = payout_module.config
+        original_estimate = payout_module.estimate_fee_deposit_resources_for_usdt_payout
+        original_worker_ready = payout_module.usdt_payout_worker_ready
+        payout_module.config = SimpleNamespace(
+            TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
+            TX_FEE=Decimal("40"),
+        )
+        payout_module.estimate_fee_deposit_resources_for_usdt_payout = (
+            lambda destination, amount: Quote()
+        )
+        payout_module.usdt_payout_worker_ready = lambda: False
+        app = Flask(__name__)
+        try:
+            with app.test_request_context(
+                f"/USDT/calc-tx-fee/1.25?address={DESTINATION}",
+                method="POST",
+            ):
+                g.symbol = "USDT"
+                result = payout_module.calc_tx_fee(Decimal("1.25"))
+        finally:
+            payout_module.config = original_config
+            payout_module.estimate_fee_deposit_resources_for_usdt_payout = (
+                original_estimate
+            )
+            payout_module.usdt_payout_worker_ready = original_worker_ready
+
+        self.assertEqual(result["fee"], "0")
+        self.assertFalse(result["resource_quote"]["submit_ready"])
+        self.assertEqual(
+            result["resource_quote"]["blocking_code"],
+            "PAYOUT_WORKER_UNAVAILABLE",
+        )
 
     def test_api_routes_usdt_single_chain_to_dedicated_queue_when_enabled(self):
         payout_module = load_payout_module()
@@ -384,6 +433,7 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         original_config = payout_module.config
         original_prepare = payout_module.prepare_payout
         original_payout_task = payout_module.payout_task
+        original_worker_ready = payout_module.usdt_payout_worker_ready
         payout_module.config = SimpleNamespace(
             TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
             TRON_USDT_PAYOUT_QUEUE="tron_usdt_fee_payouts",
@@ -394,6 +444,7 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         payout_module.payout_task = SimpleNamespace(
             s=lambda *args: FakeSignature("payout", args, calls)
         )
+        payout_module.usdt_payout_worker_ready = lambda: True
         app = Flask(__name__)
         try:
             with app.test_request_context(
@@ -406,6 +457,7 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
             payout_module.config = original_config
             payout_module.prepare_payout = original_prepare
             payout_module.payout_task = original_payout_task
+            payout_module.usdt_payout_worker_ready = original_worker_ready
 
         self.assertEqual(result, {"task_id": "task-1"})
         prepare_sig, execute_sig = calls[0]
@@ -419,6 +471,46 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
             execute_sig.options,
             {"queue": "tron_usdt_fee_payouts"},
         )
+
+    def test_api_rejects_usdt_single_when_dedicated_worker_is_missing(self):
+        payout_module = load_payout_module()
+
+        calls = []
+        original_config = payout_module.config
+        original_prepare = payout_module.prepare_payout
+        original_payout_task = payout_module.payout_task
+        original_worker_ready = payout_module.usdt_payout_worker_ready
+        payout_module.config = SimpleNamespace(
+            TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
+            TRON_USDT_PAYOUT_QUEUE="tron_usdt_fee_payouts",
+        )
+        payout_module.prepare_payout = SimpleNamespace(
+            s=lambda *args: FakeSignature("prepare", args, calls)
+        )
+        payout_module.payout_task = SimpleNamespace(
+            s=lambda *args: FakeSignature("payout", args, calls)
+        )
+        payout_module.usdt_payout_worker_ready = lambda: False
+        app = Flask(__name__)
+        try:
+            with app.test_request_context(
+                f"/USDT/payout/{DESTINATION}/1.25",
+                method="POST",
+            ):
+                g.symbol = "USDT"
+                payload, status_code = payout_module.payout(
+                    DESTINATION,
+                    Decimal("1.25"),
+                )
+        finally:
+            payout_module.config = original_config
+            payout_module.prepare_payout = original_prepare
+            payout_module.payout_task = original_payout_task
+            payout_module.usdt_payout_worker_ready = original_worker_ready
+
+        self.assertEqual(status_code, 503)
+        self.assertEqual(payload["code"], "PAYOUT_WORKER_UNAVAILABLE")
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

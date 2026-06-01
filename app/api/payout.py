@@ -6,6 +6,7 @@ import tronpy
 
 
 from .. import celery
+from ..celery_readiness import usdt_payout_worker_ready
 from ..config import config
 from ..payout_resources import (
     PayoutResourceError,
@@ -16,6 +17,22 @@ from ..tasks import prepare_payout, prepare_multipayout
 from . import api
 from ..wallet import Wallet
 from ..logging import logger
+
+
+PAYOUT_WORKER_UNAVAILABLE_CODE = "PAYOUT_WORKER_UNAVAILABLE"
+PAYOUT_WORKER_UNAVAILABLE_MESSAGE = (
+    "TRON USDT payout worker is not ready. "
+    "Ensure tron-usdt-payouts consumes tron_usdt_fee_payouts before retrying."
+)
+
+
+def _payout_worker_unavailable_response():
+    return {
+        "status": "error",
+        "code": PAYOUT_WORKER_UNAVAILABLE_CODE,
+        "message": PAYOUT_WORKER_UNAVAILABLE_MESSAGE,
+        "error": PAYOUT_WORKER_UNAVAILABLE_MESSAGE,
+    }
 
 
 @api.post("/calc-tx-fee/<decimal:amount>")
@@ -43,7 +60,12 @@ def calc_tx_fee(amount):
                 "code": "INVALID_DESTINATION",
                 "message": str(exc),
             }, 400
-        return {"fee": "0", "resource_quote": quote.to_dict()}
+        resource_quote = quote.to_dict()
+        if resource_quote.get("submit_ready") and not usdt_payout_worker_ready():
+            resource_quote["submit_ready"] = False
+            resource_quote["blocking_code"] = PAYOUT_WORKER_UNAVAILABLE_CODE
+            resource_quote["blocking_reason"] = PAYOUT_WORKER_UNAVAILABLE_MESSAGE
+        return {"fee": "0", "resource_quote": resource_quote}
     return {"fee": config.TX_FEE}
 
 
@@ -118,6 +140,8 @@ def payout(to, amount):
         config.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED
         and g.symbol == "USDT"
     ):
+        if not usdt_payout_worker_ready():
+            return _payout_worker_unavailable_response(), 503
         prepare_sig = prepare_sig.set(queue=config.TRON_USDT_PAYOUT_QUEUE)
         execute_sig = execute_sig.set(queue=config.TRON_USDT_PAYOUT_QUEUE)
     task = (prepare_sig | execute_sig).apply_async()

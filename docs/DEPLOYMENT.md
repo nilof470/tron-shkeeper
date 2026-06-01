@@ -246,12 +246,11 @@ Notes:
   should be swept. The TRC20 sweep check requires `balance > threshold`.
 - `TRX_MIN_TRANSFER_THRESHOLD` prevents sweeping activation dust. TRX sweep uses
   `balance >= threshold`, so use a value above dust, for example `1.01`.
-- Keep `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=false` for the first
-  install or upgrade. After the `tron-usdt-payouts` worker is deployed and
-  verified as `4/4 Running`, set it to `true`, run Helm again, immediately
-  reapply the worker patch if the chart does not own the fourth container, and
-  only then allow TRON USDT payouts. Keep payout traffic paused during this
-  second upgrade window.
+- Keep `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=false` until the
+  production deploy wrapper or equivalent chart overlay guarantees the
+  `tron-usdt-payouts` worker. After the worker is deployed and verified as
+  `4/4 Running`, set it to `true`. The `shkeeper.io` repository contains the
+  supported production wrapper in `deploy/shkeeper/upgrade.sh`.
 
 ### TRON resource provider environment variables
 
@@ -330,9 +329,16 @@ celery -A celery_worker.celery worker -E --loglevel=info \
   -B --schedule=/app/data/celerybeat-schedule -Q celery
 ```
 
-If the chart cannot model the extra container directly, apply this Kubernetes
-patch immediately after every `helm install` and `helm upgrade` before allowing
-USDT payouts:
+If the chart cannot model the extra container directly, use the production
+deploy wrapper from the `shkeeper.io` repository:
+
+```bash
+cd /opt/shkeeper.io
+deploy/shkeeper/upgrade.sh /root/shkeeper-values.yaml
+```
+
+For emergency recovery only, apply this Kubernetes patch immediately after
+`helm install` or `helm upgrade` before allowing USDT payouts:
 
 ```bash
 kubectl -n shkeeper get deployment tron-shkeeper -o json \
@@ -622,21 +628,21 @@ BALANCES_RESCAN_PERIOD=3600
 
 ## Updating an Existing VPS
 
-After building and pushing a new image tag locally, update the VPS values file:
+After building and pushing a new image tag locally, update the VPS values file
+and deploy through the `shkeeper.io` production wrapper:
 
 ```bash
 NEW_TAG=REPLACE_WITH_TAG
 
 sed -i "s|image: ghcr.io/nilof470/tron-shkeeper:.*|image: ghcr.io/nilof470/tron-shkeeper:${NEW_TAG}|" /root/shkeeper-values.yaml
 
-helm upgrade -f /root/shkeeper-values.yaml shkeeper vsys-host/shkeeper
-kubectl rollout status deployment/tron-shkeeper -n shkeeper
+cd /opt/shkeeper.io
+deploy/shkeeper/upgrade.sh /root/shkeeper-values.yaml
 ```
 
-If `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true` and the chart does not
-own the `tron-usdt-payouts` container in values, reapply the dedicated worker
-patch from this runbook after the Helm upgrade. A plain Helm upgrade can restore
-the base `3/3` pod shape and leave `tron_usdt_fee_payouts` unconsumed.
+Do not use a plain Helm upgrade when
+`TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true`. A plain Helm upgrade can
+restore the base `3/3` pod shape and leave `tron_usdt_fee_payouts` unconsumed.
 
 Verify the deployed image:
 
