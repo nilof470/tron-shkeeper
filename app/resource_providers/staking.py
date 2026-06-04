@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 import json
 import math
 
 from .base import EnergyProvider
 from ..config import config
 from ..connection_manager import ConnectionManager
+from ..fee_deposit_spend_guard import fee_deposit_spend_guard_for_address
 from ..logging import logger
 from ..utils import get_available_energy, get_energy_delegator
 
@@ -58,16 +61,20 @@ class StakingEnergyProvider(EnergyProvider):
 
                 logger.info("Delegating energy to onetime account")
 
-                unsigned_tx = tron_client.trx.delegate_resource(
-                    owner=energy_delegator_pub,
-                    receiver=receiver,
-                    balance=sun_to_delegate,
-                    resource="ENERGY",
-                ).build()
-                signed_tx = unsigned_tx.sign(energy_delegator_priv)
-                logger.info(f"TX json size: {len(json.dumps(signed_tx._raw_data))}")
+                with fee_deposit_spend_guard_for_address(
+                    energy_delegator_pub,
+                    reason="staking-provider-delegate-energy",
+                ):
+                    unsigned_tx = tron_client.trx.delegate_resource(
+                        owner=energy_delegator_pub,
+                        receiver=receiver,
+                        balance=sun_to_delegate,
+                        resource="ENERGY",
+                    ).build()
+                    signed_tx = unsigned_tx.sign(energy_delegator_priv)
+                    logger.info(f"TX json size: {len(json.dumps(signed_tx._raw_data))}")
 
-                delegate_tx_info = signed_tx.broadcast().wait()
+                    delegate_tx_info = signed_tx.broadcast().wait()
 
                 logger.info(
                     f"Delegated {energy_needed} energy to onetime account {receiver} with TXID: {unsigned_tx.txid}"

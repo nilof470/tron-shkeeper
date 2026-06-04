@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 from decimal import Decimal
 from functools import cache
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 from pydantic import Field, Json, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -48,18 +50,18 @@ class Settings(BaseSettings):
     BLOCK_SCANNER_STATS_LOG_PERIOD: int = 300
     BLOCK_SCANNER_MAX_BLOCK_CHUNK_SIZE: int = 1
     BLOCK_SCANNER_INTERVAL_TIME: int = 3
-    BLOCK_SCANNER_LAST_BLOCK_NUM_HINT: int | None = None
+    BLOCK_SCANNER_LAST_BLOCK_NUM_HINT: Optional[int] = None
     # Connection manager
-    MULTISERVER_CONFIG_JSON: Json[List[TronFullnode]] | None = None
+    MULTISERVER_CONFIG_JSON: Optional[Json[List[TronFullnode]]] = None
     MULTISERVER_REFRESH_BEST_SERVER_PERIOD: int = 20
     # Account encryption
     FORCE_WALLET_ENCRYPTION: bool = False
     # DEV MODE
-    DEVMODE_ENCRYPTION_PW: str | None = None
+    DEVMODE_ENCRYPTION_PW: Optional[str] = None
     DEVMODE_SKIP_NOTIFICATIONS: bool = False
     DEVMODE_CELERY_NODELAY: bool = False
     # AML
-    EXTERNAL_DRAIN_CONFIG: ExternalDrain | None = None
+    EXTERNAL_DRAIN_CONFIG: Optional[ExternalDrain] = None
     DELAY_AFTER_FEE_TRANSFER: float = 60
     AML_RESULT_UPDATE_PERIOD: int = 120
     AML_SWEEP_ACCOUNTS_PERIOD: int = 3600
@@ -71,26 +73,42 @@ class Settings(BaseSettings):
     ENERGY_DELEGATION_MODE_ALLOW_ADDITIONAL_ENERGY_DELEGATION: bool = False
     ENERGY_DELEGATION_MODE_ENERGY_DELEGATION_FACTOR: Decimal = Decimal("1.0")
     ENERGY_DELEGATION_MODE_SEPARATE_BALANCE_AND_ENERGY_ACCOUNTS: bool = False
-    ENERGY_DELEGATION_MODE_ENERGY_ACCOUNT_PUB_KEY: str | None = None
+    ENERGY_DELEGATION_MODE_ENERGY_ACCOUNT_PUB_KEY: Optional[str] = None
     ENERGY_PROVIDER: Literal["staking", "refee", "profeex"] = "staking"
     BANDWIDTH_PROVIDER: Literal["disabled", "refee", "profeex"] = "disabled"
-    REFEE: Json[RefeeConfig] | None = None
-    PROFEEX: Json[ProfeeXConfig] | None = None
+    REFEE: Optional[Json[RefeeConfig]] = None
+    PROFEEX: Optional[Json[ProfeeXConfig]] = None
     REFEE_FIXED_ENERGY_ORDER_AMOUNT: int = Field(65_000, ge=0)
     TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED: bool = False
     TRON_USDT_PAYOUT_QUEUE: str = "tron_usdt_fee_payouts"
     TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC: int = Field(900, ge=1)
     TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC: int = Field(900, ge=0)
     TRON_USDT_PAYOUT_QUEUE_READINESS_TIMEOUT_SEC: float = Field(2.0, ge=0.1)
+    PAYOUT_CONSUMER_KEYS_JSON: Optional[Json[dict]] = None
+    PAYOUT_CONSUMER_KEYS: Optional[dict] = None
+    PAYOUT_AUTH_MAX_AGE_SECONDS: int = Field(300, ge=1)
+    PAYOUT_EXECUTION_AUTO_ENQUEUE_ENABLED: bool = False
+    PAYOUT_EXECUTION_LEASE_TTL_SEC: int = Field(300, ge=1)
+    PAYOUT_EXECUTION_PREFLIGHT_CHECKS_ENABLED: bool = True
+    TRON_USDT_PAYOUT_TX_EXPIRATION_CAP_SEC: int = Field(600, ge=1)
+    TRON_USDT_PAYOUT_TX_EXPIRATION_CAP_REVIEWED_OVERRIDE: bool = False
+    TRON_USDT_PAYOUT_MIN_CONFIRMATIONS: int = Field(1, ge=1)
+    PAYOUT_CALLBACK_MAX_ATTEMPTS: int = Field(3, ge=1)
+    PAYOUT_CALLBACK_RETRY_DELAY_SEC: int = Field(60, ge=0)
+    PAYOUT_CALLBACK_TIMEOUT_SEC: int = Field(10, ge=1)
+    PAYOUT_CALLBACK_SWEEP_ENABLED: bool = True
+    PAYOUT_CALLBACK_SWEEP_PERIOD_SEC: int = Field(60, ge=1)
+    PAYOUT_CALLBACK_SWEEP_LIMIT: int = Field(100, ge=1)
+    PAYOUT_CALLBACK_CLAIM_TTL_SEC: int = Field(300, ge=1)
     PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_ATTEMPTS: int = Field(3, ge=1)
     PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_SLEEP_SEC: float = Field(1.0, ge=0)
     # Voting
     SR_VOTING: bool = False
-    SR_VOTES: Json[List[SrVote]] | None = None
+    SR_VOTES: Optional[Json[List[SrVote]]] = None
     SR_VOTING_ALLOW_BURN_TRX: bool = False
     # Token customization
-    USDT_MIN_TRANSFER_THRESHOLD: Decimal | None = None
-    USDC_MIN_TRANSFER_THRESHOLD: Decimal | None = None
+    USDT_MIN_TRANSFER_THRESHOLD: Optional[Decimal] = None
+    USDC_MIN_TRANSFER_THRESHOLD: Optional[Decimal] = None
 
     TOKENS: List[Token] = [
         Token(
@@ -166,8 +184,8 @@ class Settings(BaseSettings):
     @field_validator("EXTERNAL_DRAIN_CONFIG", mode="after")
     @classmethod
     def validate_external_drain_config_states(
-        cls, value: ExternalDrain | None
-    ) -> ExternalDrain | None:
+        cls, value: Optional[ExternalDrain]
+    ) -> Optional[ExternalDrain]:
         if value is None:
             return value
 
@@ -210,6 +228,19 @@ class Settings(BaseSettings):
             raise ValueError(
                 "PROFEEX must be configured when "
                 "TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true"
+            )
+        if (
+            self.TRON_USDT_PAYOUT_TX_EXPIRATION_CAP_SEC > 1800
+            and not self.TRON_USDT_PAYOUT_TX_EXPIRATION_CAP_REVIEWED_OVERRIDE
+        ):
+            raise ValueError(
+                "TRON_USDT_PAYOUT_TX_EXPIRATION_CAP_SEC must be <= 1800 "
+                "unless TRON_USDT_PAYOUT_TX_EXPIRATION_CAP_REVIEWED_OVERRIDE=true"
+            )
+        if self.PAYOUT_CALLBACK_CLAIM_TTL_SEC <= self.PAYOUT_CALLBACK_TIMEOUT_SEC:
+            raise ValueError(
+                "PAYOUT_CALLBACK_CLAIM_TTL_SEC must be greater than "
+                "PAYOUT_CALLBACK_TIMEOUT_SEC"
             )
         return self
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from .base import BandwidthProvider, EnergyProvider
 from .profeex import ProfeeXBandwidthProvider, ProfeeXProvider
 from .refee import RefeeProvider

@@ -7,6 +7,7 @@ import decimal
 from functools import cache, lru_cache
 import sqlite3
 import time
+import uuid
 from decimal import Decimal
 from typing import Dict, List
 
@@ -17,9 +18,6 @@ from tronpy.keys import PrivateKey
 from tronpy.tron import current_timestamp
 from tronpy.abi import trx_abi
 import tronpy.exceptions
-import requests
-import redis
-import redis.exceptions
 from sqlmodel import Session, select
 
 from app.schemas import KeyType
@@ -27,6 +25,10 @@ from app.schemas import KeyType
 from . import celery
 from .config import config
 from .db import query_db, query_db2
+from .fee_deposit_spend_guard import (
+    fee_deposit_spend_guard_for_address,
+    fee_deposit_spend_lock,
+)
 from .wallet import Wallet
 from .utils import (
     est_vote_tx_bw_cons,
@@ -37,6 +39,12 @@ from .utils import (
     skip_if_running,
 )
 from .connection_manager import ConnectionManager
+from .payout_callback_outbox import (
+    claim_due_payout_callbacks,
+    create_payout_callback,
+    dispatch_payout_callback,
+    should_retry,
+)
 from .payout_resources import ensure_fee_deposit_resources_for_usdt_payout
 from .resource_providers import get_bandwidth_provider, get_energy_provider
 from .logging import logger
@@ -45,22 +53,8 @@ from .wallet_encryption import wallet_encryption
 
 @contextmanager
 def usdt_payout_resource_lock():
-    client = redis.Redis.from_url(f"redis://{config.REDIS_HOST}")
-    lock = client.lock(
-        "tron_usdt_fee_payout_resources",
-        timeout=config.TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC,
-        blocking_timeout=config.TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC,
-        thread_local=False,
-    )
-    if not lock.acquire(blocking=True):
-        raise Exception("Timed out waiting for TRON USDT payout resource lock")
-    try:
+    with fee_deposit_spend_lock(reason="tron-usdt-payout"):
         yield
-    finally:
-        try:
-            lock.release()
-        except redis.exceptions.RedisError:
-            logger.warning("TRON USDT payout resource lock release failed")
 
 
 def estimate_trc20_sweep_energy(
@@ -146,6 +140,10 @@ def prepare_multipayout(payout_list, symbol):
             {
                 "dst": payout["dest"],
                 "amount": decimal.Decimal(payout["amount"]),
+                "ensure_usdt_payout_resources": (
+                    config.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED
+                    and symbol == "USDT"
+                ),
             }
         )
     return steps
@@ -154,31 +152,57 @@ def prepare_multipayout(payout_list, symbol):
 @celery.task()
 def payout(steps, symbol):
     wallet = Wallet(symbol)
-    if any(step.get("ensure_usdt_payout_resources") for step in steps):
-        payout_results = []
-        for step in steps:
-            if step.get("ensure_usdt_payout_resources"):
-                with usdt_payout_resource_lock():
-                    ensure_fee_deposit_resources_for_usdt_payout(
-                        step["dst"],
-                        step["amount"],
-                        tron_client=wallet.client,
-                    )
-                    result = wallet.transfer(step["dst"], step["amount"])
+    payout_results = []
+    try:
+        if any(step.get("ensure_usdt_payout_resources") for step in steps):
+            for step in steps:
+                if step.get("ensure_usdt_payout_resources"):
+                    with usdt_payout_resource_lock():
+                        ensure_fee_deposit_resources_for_usdt_payout(
+                            step["dst"],
+                            step["amount"],
+                            tron_client=wallet.client,
+                        )
+                        result = wallet.transfer(step["dst"], step["amount"])
+                    payout_results.append(result)
                     if result.get("status") != "success":
                         raise Exception(f"USDT payout transfer failed: {result}")
-                payout_results.append(result)
-            else:
-                payout_results.append(wallet.transfer(step["dst"], step["amount"]))
-    else:
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=config.CONCURRENT_MAX_WORKERS
-        ) as executor:
-            payout_results = list(
-                executor.map(lambda x: wallet.transfer(x["dst"], x["amount"]), steps)
-            )
-    post_payout_results.delay(payout_results, symbol)
+                else:
+                    payout_results.append(wallet.transfer(step["dst"], step["amount"]))
+        else:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=config.CONCURRENT_MAX_WORKERS
+            ) as executor:
+                for result in executor.map(
+                    lambda x: wallet.transfer(x["dst"], x["amount"]),
+                    steps,
+                ):
+                    payout_results.append(result)
+    except Exception:
+        completed_results = [
+            result
+            for result in payout_results
+            if result.get("status") == "success" or result.get("txids")
+        ]
+        if completed_results:
+            queue_payout_callback(completed_results, symbol)
+        raise
+    queue_payout_callback(payout_results, symbol)
     return payout_results
+
+
+@celery.task(bind=True)
+def execute_payout_execution(self, execution_id):
+    from .payout_execution import PayoutExecutionStore
+
+    wallet = Wallet("USDT")
+    return PayoutExecutionStore.execute(
+        execution_id,
+        wallet=wallet,
+        resource_ensurer=ensure_fee_deposit_resources_for_usdt_payout,
+        lock_factory=usdt_payout_resource_lock,
+        lease_owner=self.request.id,
+    )
 
 
 def _fund_onetime_for_trc20_burn(
@@ -196,23 +220,27 @@ def _fund_onetime_for_trc20_burn(
         f"{balance} {symbol}. Threshold is {min_threshold} {symbol}"
     )
 
-    main_acc_balance = tron_client.get_account_balance(main_publ_key)
-
-    if main_acc_balance < config.get_internal_trc20_tx_fee():
-        logger.warning(
-            f"Main account hasn't enough currency: balance: {main_acc_balance} need: {config.get_internal_trc20_tx_fee()}.  Terminating transfer."
-        )
-        return False, None
-
-    tx_trx = tron_client.trx.transfer(
+    with fee_deposit_spend_guard_for_address(
         main_publ_key,
-        onetime_publ_key,
-        int(config.get_internal_trc20_tx_fee() * 1_000_000),
-    )
-    tx_trx._raw_data["expiration"] = current_timestamp() + 60_000
-    tx_trx = tx_trx.build()
-    tx_trx = tx_trx.sign(main_priv_key)
-    tx_trx_res = tx_trx.broadcast().wait()
+        reason="trc20-sweep-fee-funding",
+    ):
+        main_acc_balance = tron_client.get_account_balance(main_publ_key)
+
+        if main_acc_balance < config.get_internal_trc20_tx_fee():
+            logger.warning(
+                f"Main account hasn't enough currency: balance: {main_acc_balance} need: {config.get_internal_trc20_tx_fee()}.  Terminating transfer."
+            )
+            return False, None
+
+        tx_trx = tron_client.trx.transfer(
+            main_publ_key,
+            onetime_publ_key,
+            int(config.get_internal_trc20_tx_fee() * 1_000_000),
+        )
+        tx_trx._raw_data["expiration"] = current_timestamp() + 60_000
+        tx_trx = tx_trx.build()
+        tx_trx = tx_trx.sign(main_priv_key)
+        tx_trx_res = tx_trx.broadcast().wait()
     logger.info(
         f"Fee sent to {onetime_publ_key} with TXID {tx_trx.txid}. Details: {tx_trx_res}"
     )
@@ -375,16 +403,20 @@ def transfer_trc20_from(onetime_acc, symbol):
                     )
                     return
 
-            logger.info(f"Activating {onetime_publ_key} by sending 0.1 TRX")
-            tx_trx = tron_client.trx.transfer(
+            with fee_deposit_spend_guard_for_address(
                 main_publ_key,
-                onetime_publ_key,
-                int(0.1 * 1_000_000),
-            )
-            tx_trx._raw_data["expiration"] = current_timestamp() + 60_000
-            tx_trx = tx_trx.build()
-            tx_trx = tx_trx.sign(main_priv_key)
-            tx_trx_res = tx_trx.broadcast().wait()
+                reason="trc20-sweep-account-activation",
+            ):
+                logger.info(f"Activating {onetime_publ_key} by sending 0.1 TRX")
+                tx_trx = tron_client.trx.transfer(
+                    main_publ_key,
+                    onetime_publ_key,
+                    int(0.1 * 1_000_000),
+                )
+                tx_trx._raw_data["expiration"] = current_timestamp() + 60_000
+                tx_trx = tx_trx.build()
+                tx_trx = tx_trx.sign(main_priv_key)
+                tx_trx_res = tx_trx.broadcast().wait()
             logger.info(f"0.1 TRX sent. Details: {tx_trx_res}")
             onetime_address_resources = tron_client.get_account_resource(
                 onetime_publ_key
@@ -590,14 +622,18 @@ def undelegate_energy(receiver):
         f"Undelegating {frozen_balance_for_energy / 1_000_000} TRX from {receiver}"
     )
 
-    unsigned_tx = tron_client.trx.undelegate_resource(
-        owner=energy_delegator_pub,
-        receiver=receiver,
-        balance=frozen_balance_for_energy,
-        resource="ENERGY",
-    ).build()
-    signed_tx = unsigned_tx.sign(energy_delegator_priv)
-    undelegate_tx_info = signed_tx.broadcast().wait()
+    with fee_deposit_spend_guard_for_address(
+        energy_delegator_pub,
+        reason="energy-undelegate",
+    ):
+        unsigned_tx = tron_client.trx.undelegate_resource(
+            owner=energy_delegator_pub,
+            receiver=receiver,
+            balance=frozen_balance_for_energy,
+            resource="ENERGY",
+        ).build()
+        signed_tx = unsigned_tx.sign(energy_delegator_priv)
+        undelegate_tx_info = signed_tx.broadcast().wait()
 
     logger.info(
         f"Undelegated {frozen_balance_for_energy / 1_000_000} TRX from {receiver} with TXID: {unsigned_tx.txid}"
@@ -667,18 +703,56 @@ def transfer_trx_from(onetime_publ_key):
     return {"tx_trx_res": tx_trx_res}
 
 
-@celery.task()
-def post_payout_results(data, symbol):
-    while True:
-        try:
-            return requests.post(
-                f"http://{config.SHKEEPER_HOST}/api/v1/payoutnotify/{symbol}",
-                headers={"X-Shkeeper-Backend-Key": config.SHKEEPER_BACKEND_KEY},
-                json=data,
-            )
-        except Exception as e:
-            logger.warning(f"Shkeeper payout notification failed: {e}")
-            time.sleep(10)
+def queue_payout_callback(data, symbol):
+    try:
+        outbox_id = create_payout_callback(data, symbol)
+    except Exception as exc:
+        logger.exception(
+            "Shkeeper payout notification outbox write failed after payout "
+            f"completed: symbol={symbol} error={exc}"
+        )
+        return None
+    try:
+        post_payout_results.delay(outbox_id)
+    except Exception as exc:
+        logger.warning(
+            "Shkeeper payout notification task enqueue failed; outbox row "
+            f"remains pending: outbox_id={outbox_id} error={exc}"
+        )
+    return outbox_id
+
+
+@celery.task(bind=True)
+def post_payout_results(self, outbox_id):
+    result = dispatch_payout_callback(outbox_id, claim_token=self.request.id)
+    if should_retry(result):
+        logger.warning(
+            "Shkeeper payout notification failed; outbox retry remains pending: "
+            f"outbox_id={outbox_id} attempts={result['attempts']} "
+            f"error={result['last_error']} next_attempt_at={result['next_attempt_at']}"
+        )
+    elif result and result.get("status") == "FAILED":
+        logger.warning(
+            "Shkeeper payout notification permanently failed: "
+            f"outbox_id={outbox_id} attempts={result.get('attempts')} "
+            f"error={result.get('last_error')}"
+        )
+    return result
+
+
+@celery.task(bind=True)
+def dispatch_due_payout_callbacks(self, limit=None):
+    claim_token = self.request.id or f"payout-callback-sweep-{uuid.uuid4()}"
+    rows = claim_due_payout_callbacks(
+        limit or config.PAYOUT_CALLBACK_SWEEP_LIMIT,
+        claim_token=claim_token,
+    )
+    results = []
+    for row in rows:
+        results.append(
+            dispatch_payout_callback(row["id"], claim_token=claim_token)
+        )
+    return results
 
 
 def is_task_running(task_instance, name: str, args: List = None, kwargs: Dict = None):
@@ -918,12 +992,16 @@ def vote_for_sr(self, *args, **kwargs):
             )
             return
 
-    unsigned_tx = tron_client.trx.vote_witness(
+    with fee_deposit_spend_guard_for_address(
         energy_delegator_pub,
-        *[(v.vote_address, v.vote_count) for v in config.SR_VOTES],
-    ).build()
-    signed_tx = unsigned_tx.sign(energy_delegator_priv)
-    tx_info = signed_tx.broadcast().wait()
+        reason="sr-vote",
+    ):
+        unsigned_tx = tron_client.trx.vote_witness(
+            energy_delegator_pub,
+            *[(v.vote_address, v.vote_count) for v in config.SR_VOTES],
+        ).build()
+        signed_tx = unsigned_tx.sign(energy_delegator_priv)
+        tx_info = signed_tx.broadcast().wait()
 
     logger.info(f"Voting complete. TX details: {tx_info}")
 
@@ -957,6 +1035,12 @@ def claim_reward(self, *args, **kwargs):
 def setup_periodic_tasks(sender: Celery, **kwargs):
     if config.SR_VOTING:
         vote_for_sr.delay()
+
+    if config.PAYOUT_CALLBACK_SWEEP_ENABLED:
+        sender.add_periodic_task(
+            config.PAYOUT_CALLBACK_SWEEP_PERIOD_SEC,
+            dispatch_due_payout_callbacks.s(),
+        )
 
     if config.EXTERNAL_DRAIN_CONFIG:
         from .custom.aml.tasks import sweep_accounts, recheck_transactions

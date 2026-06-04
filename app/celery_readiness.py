@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from . import celery
 from .config import config
 from .logging import logger

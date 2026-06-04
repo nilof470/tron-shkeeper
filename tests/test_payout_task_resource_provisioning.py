@@ -74,6 +74,18 @@ class FakeWallet:
         return dict(self.transfer_result)
 
 
+class SequenceWallet:
+    client = "tron-client"
+
+    def __init__(self, _symbol, results, events):
+        self.results = list(results)
+        self.events = events
+
+    def transfer(self, dst, amount):
+        self.events.append(("transfer", dst, amount))
+        return dict(self.results.pop(0))
+
+
 class FakeSignature:
     def __init__(self, name, args, calls):
         self.name = name
@@ -138,7 +150,7 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         original_wallet = tasks.Wallet
         original_helper = tasks.ensure_fee_deposit_resources_for_usdt_payout
         original_lock = tasks.usdt_payout_resource_lock
-        original_post_results = tasks.post_payout_results
+        original_queue_payout_callback = tasks.queue_payout_callback
         task_globals = tasks.payout.run.__globals__
         original_globals_wallet = task_globals["Wallet"]
         original_globals_config = task_globals["config"]
@@ -146,7 +158,7 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
             "ensure_fee_deposit_resources_for_usdt_payout"
         ]
         original_globals_lock = task_globals["usdt_payout_resource_lock"]
-        original_globals_post_results = task_globals["post_payout_results"]
+        original_globals_queue_payout_callback = task_globals["queue_payout_callback"]
         tasks.config = SimpleNamespace(
             TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=enabled,
             CONCURRENT_MAX_WORKERS=1,
@@ -179,27 +191,29 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
             tasks.usdt_payout_resource_lock = fake_lock
             task_globals["usdt_payout_resource_lock"] = fake_lock
         posted = []
-        tasks.post_payout_results = SimpleNamespace(
-            delay=lambda results, symbol: posted.append((results, symbol))
+        tasks.queue_payout_callback = lambda results, symbol: posted.append(
+            (results, symbol)
         )
         task_globals["Wallet"] = fake_wallet_factory
         task_globals["config"] = tasks.config
         task_globals["ensure_fee_deposit_resources_for_usdt_payout"] = fake_helper
-        task_globals["post_payout_results"] = tasks.post_payout_results
+        task_globals["queue_payout_callback"] = tasks.queue_payout_callback
 
         def restore():
             tasks.config = original_config
             tasks.Wallet = original_wallet
             tasks.ensure_fee_deposit_resources_for_usdt_payout = original_helper
             tasks.usdt_payout_resource_lock = original_lock
-            tasks.post_payout_results = original_post_results
+            tasks.queue_payout_callback = original_queue_payout_callback
             task_globals["Wallet"] = original_globals_wallet
             task_globals["config"] = original_globals_config
             task_globals["ensure_fee_deposit_resources_for_usdt_payout"] = (
                 original_globals_helper
             )
             task_globals["usdt_payout_resource_lock"] = original_globals_lock
-            task_globals["post_payout_results"] = original_globals_post_results
+            task_globals["queue_payout_callback"] = (
+                original_globals_queue_payout_callback
+            )
 
         return events, posted, restore
 
@@ -218,15 +232,33 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         self.assertEqual(steps[0]["amount"], Decimal("1.25"))
         self.assertTrue(steps[0]["ensure_usdt_payout_resources"])
 
-    def test_prepare_multipayout_does_not_mark_resource_provisioning(self):
+    def test_prepare_multipayout_marks_usdt_when_feature_enabled(self):
         tasks = load_tasks()
+        original_config = tasks.config
+        original_task_config = tasks.prepare_multipayout.run.__globals__["config"]
+        tasks.config = SimpleNamespace(
+            TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
+        )
+        tasks.prepare_multipayout.run.__globals__["config"] = tasks.config
+        try:
+            steps = tasks.prepare_multipayout.run(
+                [{"dest": DESTINATION, "amount": Decimal("1.25")}],
+                "USDT",
+            )
+        finally:
+            tasks.config = original_config
+            tasks.prepare_multipayout.run.__globals__["config"] = original_task_config
 
+        self.assertTrue(steps[0]["ensure_usdt_payout_resources"])
+
+    def test_prepare_multipayout_does_not_mark_non_usdt_resource_provisioning(self):
+        tasks = load_tasks()
         steps = tasks.prepare_multipayout.run(
             [{"dest": DESTINATION, "amount": Decimal("1.25")}],
-            "USDT",
+            "USDC",
         )
 
-        self.assertNotIn("ensure_usdt_payout_resources", steps[0])
+        self.assertFalse(steps[0]["ensure_usdt_payout_resources"])
 
     def test_payout_calls_resource_helper_before_wallet_transfer(self):
         tasks = load_tasks()
@@ -287,14 +319,99 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         self.assertEqual(events[3][0], "lock_exit")
         self.assertEqual(posted, [])
 
-    def test_payout_posts_result_when_lock_release_connection_fails(self):
+    def test_payout_queues_callback_for_partial_success_before_later_failure(self):
         tasks = load_tasks()
 
+        events = []
+        posted = []
+        original_wallet = tasks.Wallet
+        original_helper = tasks.ensure_fee_deposit_resources_for_usdt_payout
+        original_lock = tasks.usdt_payout_resource_lock
+        original_queue = tasks.queue_payout_callback
+        task_globals = tasks.payout.run.__globals__
+        original_globals_wallet = task_globals["Wallet"]
+        original_globals_helper = task_globals[
+            "ensure_fee_deposit_resources_for_usdt_payout"
+        ]
+        original_globals_lock = task_globals["usdt_payout_resource_lock"]
+        original_globals_queue = task_globals["queue_payout_callback"]
+
+        @contextmanager
+        def fake_lock():
+            yield
+
+        try:
+            tasks.Wallet = lambda symbol: SequenceWallet(
+                symbol,
+                [
+                    {"dest": DESTINATION, "status": "success", "txids": ["tx-1"]},
+                    {"dest": DESTINATION, "status": "error", "txids": ["tx-2"]},
+                ],
+                events,
+            )
+            tasks.ensure_fee_deposit_resources_for_usdt_payout = (
+                lambda *args, **kwargs: None
+            )
+            tasks.usdt_payout_resource_lock = fake_lock
+            tasks.queue_payout_callback = lambda results, symbol: posted.append(
+                (results, symbol)
+            )
+            task_globals["Wallet"] = tasks.Wallet
+            task_globals["ensure_fee_deposit_resources_for_usdt_payout"] = (
+                tasks.ensure_fee_deposit_resources_for_usdt_payout
+            )
+            task_globals["usdt_payout_resource_lock"] = fake_lock
+            task_globals["queue_payout_callback"] = tasks.queue_payout_callback
+
+            with self.assertRaisesRegex(Exception, "USDT payout transfer failed"):
+                tasks.payout.run(
+                    [
+                        {
+                            "dst": DESTINATION,
+                            "amount": Decimal("1"),
+                            "ensure_usdt_payout_resources": True,
+                        },
+                        {
+                            "dst": DESTINATION,
+                            "amount": Decimal("2"),
+                            "ensure_usdt_payout_resources": True,
+                        },
+                    ],
+                    "USDT",
+                )
+        finally:
+            tasks.Wallet = original_wallet
+            tasks.ensure_fee_deposit_resources_for_usdt_payout = original_helper
+            tasks.usdt_payout_resource_lock = original_lock
+            tasks.queue_payout_callback = original_queue
+            task_globals["Wallet"] = original_globals_wallet
+            task_globals["ensure_fee_deposit_resources_for_usdt_payout"] = (
+                original_globals_helper
+            )
+            task_globals["usdt_payout_resource_lock"] = original_globals_lock
+            task_globals["queue_payout_callback"] = original_globals_queue
+
+        self.assertEqual(len(posted), 1)
+        self.assertEqual(posted[0][1], "USDT")
+        self.assertEqual(posted[0][0][0]["txids"], ["tx-1"])
+
+    def test_payout_posts_result_when_lock_release_connection_fails(self):
+        tasks = load_tasks()
+        fee_guard = importlib.import_module("app.fee_deposit_spend_guard")
+
         lock_events = []
-        original_from_url = tasks.redis.Redis.from_url
-        tasks.redis.Redis.from_url = lambda _url: ReleaseFailingRedisClient(
+        original_enabled = fee_guard.config.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED
+        original_redis_host = fee_guard.config.REDIS_HOST
+        original_lock_ttl = fee_guard.config.TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC
+        original_lock_wait = fee_guard.config.TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC
+        original_from_url = fee_guard.redis.Redis.from_url
+        fee_guard.config.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED = True
+        fee_guard.config.REDIS_HOST = "localhost"
+        fee_guard.config.TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC = 900
+        fee_guard.config.TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC = 900
+        fee_guard.redis.Redis.from_url = lambda _url: ReleaseFailingRedisClient(
             lock_events,
-            tasks.redis.exceptions.ConnectionError("redis down"),
+            fee_guard.redis.exceptions.ConnectionError("redis down"),
         )
         events, posted, restore = self.patch_tasks(
             tasks,
@@ -313,7 +430,17 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
                 "USDT",
             )
         finally:
-            tasks.redis.Redis.from_url = original_from_url
+            fee_guard.redis.Redis.from_url = original_from_url
+            fee_guard.config.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED = (
+                original_enabled
+            )
+            fee_guard.config.REDIS_HOST = original_redis_host
+            fee_guard.config.TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC = (
+                original_lock_ttl
+            )
+            fee_guard.config.TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC = (
+                original_lock_wait
+            )
             restore()
 
         self.assertEqual(
@@ -507,6 +634,150 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
             payout_module.prepare_payout = original_prepare
             payout_module.payout_task = original_payout_task
             payout_module.usdt_payout_worker_ready = original_worker_ready
+
+        self.assertEqual(status_code, 503)
+        self.assertEqual(payload["code"], "PAYOUT_WORKER_UNAVAILABLE")
+        self.assertEqual(calls, [])
+
+    def test_api_rejects_underfunded_usdt_multipayout_before_enqueue(self):
+        payout_module = load_payout_module()
+
+        class ApiWallet:
+            def __init__(self, symbol="TRX"):
+                self.symbol = symbol
+                self.balance = Decimal("1") if symbol == "USDT" else Decimal("100")
+                self.main_account = FEE_DEPOSIT
+
+        calls = []
+        original_config = payout_module.config
+        original_prepare = payout_module.prepare_multipayout
+        original_payout_task = payout_module.payout_task
+        original_worker_ready = payout_module.usdt_payout_worker_ready
+        original_wallet = payout_module.Wallet
+        payout_module.config = SimpleNamespace(
+            TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
+            TRON_USDT_PAYOUT_QUEUE="tron_usdt_fee_payouts",
+            TX_FEE=Decimal("40"),
+        )
+        payout_module.prepare_multipayout = SimpleNamespace(
+            s=lambda *args: FakeSignature("prepare", args, calls)
+        )
+        payout_module.payout_task = SimpleNamespace(
+            s=lambda *args: FakeSignature("payout", args, calls)
+        )
+        payout_module.usdt_payout_worker_ready = lambda: True
+        payout_module.Wallet = ApiWallet
+        app = Flask(__name__)
+        try:
+            with app.test_request_context(
+                "/USDT/multipayout",
+                method="POST",
+                json=[{"dest": DESTINATION, "amount": "2.00"}],
+            ):
+                g.symbol = "USDT"
+                with self.assertRaisesRegex(Exception, "Not enough USDT tokens"):
+                    payout_module.multipayout()
+        finally:
+            payout_module.config = original_config
+            payout_module.prepare_multipayout = original_prepare
+            payout_module.payout_task = original_payout_task
+            payout_module.usdt_payout_worker_ready = original_worker_ready
+            payout_module.Wallet = original_wallet
+
+        self.assertEqual(calls, [])
+
+    def test_api_routes_usdt_multipayout_chain_to_dedicated_queue_when_enabled(self):
+        payout_module = load_payout_module()
+
+        class ApiWallet:
+            def __init__(self, symbol="TRX"):
+                self.symbol = symbol
+                self.balance = Decimal("100")
+                self.main_account = FEE_DEPOSIT
+
+        calls = []
+        original_config = payout_module.config
+        original_prepare = payout_module.prepare_multipayout
+        original_payout_task = payout_module.payout_task
+        original_worker_ready = payout_module.usdt_payout_worker_ready
+        original_wallet = payout_module.Wallet
+        payout_module.config = SimpleNamespace(
+            TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
+            TRON_USDT_PAYOUT_QUEUE="tron_usdt_fee_payouts",
+            TX_FEE=Decimal("40"),
+        )
+        payout_module.prepare_multipayout = SimpleNamespace(
+            s=lambda *args: FakeSignature("prepare", args, calls)
+        )
+        payout_module.payout_task = SimpleNamespace(
+            s=lambda *args: FakeSignature("payout", args, calls)
+        )
+        payout_module.usdt_payout_worker_ready = lambda: True
+        payout_module.Wallet = ApiWallet
+        app = Flask(__name__)
+        try:
+            with app.test_request_context(
+                "/USDT/multipayout",
+                method="POST",
+                json=[{"dest": DESTINATION, "amount": "1.25"}],
+            ):
+                g.symbol = "USDT"
+                result = payout_module.multipayout()
+        finally:
+            payout_module.config = original_config
+            payout_module.prepare_multipayout = original_prepare
+            payout_module.payout_task = original_payout_task
+            payout_module.usdt_payout_worker_ready = original_worker_ready
+            payout_module.Wallet = original_wallet
+
+        self.assertEqual(result, {"task_id": "task-1"})
+        prepare_sig, execute_sig = calls[0]
+        self.assertEqual(prepare_sig.options, {"queue": "tron_usdt_fee_payouts"})
+        self.assertEqual(execute_sig.options, {"queue": "tron_usdt_fee_payouts"})
+
+    def test_api_rejects_usdt_multipayout_when_dedicated_worker_is_missing(self):
+        payout_module = load_payout_module()
+
+        class ApiWallet:
+            def __init__(self, symbol="TRX"):
+                self.symbol = symbol
+                self.balance = Decimal("100")
+                self.main_account = FEE_DEPOSIT
+
+        calls = []
+        original_config = payout_module.config
+        original_prepare = payout_module.prepare_multipayout
+        original_payout_task = payout_module.payout_task
+        original_worker_ready = payout_module.usdt_payout_worker_ready
+        original_wallet = payout_module.Wallet
+        payout_module.config = SimpleNamespace(
+            TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
+            TRON_USDT_PAYOUT_QUEUE="tron_usdt_fee_payouts",
+            TX_FEE=Decimal("40"),
+        )
+        payout_module.prepare_multipayout = SimpleNamespace(
+            s=lambda *args: FakeSignature("prepare", args, calls)
+        )
+        payout_module.payout_task = SimpleNamespace(
+            s=lambda *args: FakeSignature("payout", args, calls)
+        )
+        payout_module.usdt_payout_worker_ready = lambda: False
+        payout_module.Wallet = ApiWallet
+        app = Flask(__name__)
+        try:
+            with app.test_request_context(
+                "/USDT/multipayout",
+                method="POST",
+                json=[{"dest": DESTINATION, "amount": "1.25"}],
+            ):
+                g.symbol = "USDT"
+                payload, status_code = payout_module.multipayout()
+        finally:
+            payout_module.config = original_config
+            payout_module.prepare_multipayout = original_prepare
+            payout_module.payout_task = original_payout_task
+            payout_module.usdt_payout_worker_ready = original_worker_ready
+            payout_module.Wallet = original_wallet
 
         self.assertEqual(status_code, 503)
         self.assertEqual(payload["code"], "PAYOUT_WORKER_UNAVAILABLE")
