@@ -105,12 +105,12 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
         if active_order is None:
             return False
 
-        onetime_energy_available = self._get_available_energy(
-            tron_client, receiver, "post-delegation"
-        )
-        if onetime_energy_available is None:
-            return False
-        if onetime_energy_available < threshold:
+        if not self._wait_for_energy_available(
+            tron_client,
+            receiver,
+            threshold,
+            "post-delegation",
+        ):
             logger.warning(
                 "Onetime account has not enough energy after ProfeeX delegation. "
                 "Terminating transfer."
@@ -217,7 +217,12 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
         if active_order is None:
             return False
 
-        if not has_free_bw(receiver, bandwidth_required, tron_client=tron_client):
+        if not self._wait_for_bandwidth_available(
+            tron_client,
+            receiver,
+            bandwidth_required,
+            "post-delegation",
+        ):
             logger.warning(
                 "Onetime account has not enough bandwidth after ProfeeX delegation. "
                 "Terminating transfer."
@@ -307,6 +312,83 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
                 f"Unable to read ProfeeX receiver energy during {stage}: {receiver}"
             )
             return None
+
+    @staticmethod
+    def _post_active_recheck_attempts() -> int:
+        return max(
+            int(getattr(config, "PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_ATTEMPTS", 3)),
+            1,
+        )
+
+    @staticmethod
+    def _post_active_recheck_sleep_sec() -> float:
+        return max(
+            float(getattr(config, "PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_SLEEP_SEC", 1.0)),
+            0.0,
+        )
+
+    def _sleep_before_next_resource_check(self, attempt: int) -> None:
+        if attempt + 1 >= self._post_active_recheck_attempts():
+            return
+        sleep_for = self._post_active_recheck_sleep_sec()
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+
+    def _wait_for_energy_available(
+        self,
+        tron_client,
+        receiver: str,
+        threshold: int,
+        stage: str,
+    ) -> bool:
+        attempts = self._post_active_recheck_attempts()
+        for attempt in range(attempts):
+            available = self._get_available_energy(
+                tron_client,
+                receiver,
+                f"{stage} attempt {attempt + 1}/{attempts}",
+            )
+            if available is not None:
+                logger.info(
+                    f"ProfeeX energy on-chain check: {receiver=} "
+                    f"available={available} threshold={threshold} "
+                    f"attempt={attempt + 1}/{attempts}"
+                )
+                if available >= threshold:
+                    return True
+            self._sleep_before_next_resource_check(attempt)
+        return False
+
+    def _wait_for_bandwidth_available(
+        self,
+        tron_client,
+        receiver: str,
+        bandwidth_required: int,
+        stage: str,
+    ) -> bool:
+        attempts = self._post_active_recheck_attempts()
+        for attempt in range(attempts):
+            try:
+                available = has_free_bw(
+                    receiver,
+                    bandwidth_required,
+                    tron_client=tron_client,
+                )
+            except Exception:
+                logger.exception(
+                    "Unable to read ProfeeX receiver bandwidth during "
+                    f"{stage} attempt {attempt + 1}/{attempts}: {receiver}"
+                )
+                available = False
+            logger.info(
+                f"ProfeeX bandwidth on-chain check: {receiver=} "
+                f"available={available} required={bandwidth_required} "
+                f"attempt={attempt + 1}/{attempts}"
+            )
+            if available:
+                return True
+            self._sleep_before_next_resource_check(attempt)
+        return False
 
     def _wait_until_active(
         self, settings, task_id: str, initial_order: dict, resource_name: str

@@ -310,6 +310,44 @@ class ProfeeXBandwidthProviderTests(unittest.TestCase):
             profeex.requests.post = original_post
             restore_config()
 
+    def test_energy_recheck_waits_after_active_until_resource_visible(self):
+        from app.resource_providers import profeex
+        from app.resource_providers.profeex import ProfeeXProvider
+
+        client = SequencedEnergyTronClient(
+            [
+                {"EnergyLimit": 0, "EnergyUsed": 0},
+                {"EnergyLimit": 0, "EnergyUsed": 0},
+                {"EnergyLimit": 65_000, "EnergyUsed": 0},
+            ]
+        )
+        provider = ProfeeXProvider(tron_client=client)
+
+        original_post = profeex.requests.post
+        original_get = profeex.requests.get
+        restore_config = self.patch_config(profeex)
+        try:
+            profeex.requests.post = lambda *args, **kwargs: MockJsonResponse(
+                202, {"task_id": "task-1", "status": "QUEUED"}
+            )
+            profeex.requests.get = lambda *args, **kwargs: MockJsonResponse(
+                200, {"task_id": "task-1", "status": "ACTIVE"}
+            )
+            self.assertTrue(
+                provider.acquire_energy(
+                    "TADDR",
+                    7_321,
+                    {"EnergyLimit": 0, "EnergyUsed": 0},
+                    minimum_energy_required=72_321,
+                )
+            )
+        finally:
+            profeex.requests.post = original_post
+            profeex.requests.get = original_get
+            restore_config()
+
+        self.assertEqual(client.resource_calls, ["TADDR", "TADDR", "TADDR"])
+
     def test_active_status_requires_post_delegation_energy_recheck(self):
         from app.resource_providers import profeex
         from app.resource_providers.profeex import ProfeeXProvider
@@ -345,7 +383,7 @@ class ProfeeXBandwidthProviderTests(unittest.TestCase):
             profeex.requests.get = original_get
             restore_config()
 
-        self.assertEqual(client.resource_calls, ["TADDR", "TADDR"])
+        self.assertEqual(client.resource_calls, ["TADDR", "TADDR", "TADDR", "TADDR"])
 
     def test_release_energy_is_noop(self):
         from app.resource_providers.profeex import ProfeeXProvider
@@ -476,7 +514,38 @@ class ProfeeXBandwidthProviderTests(unittest.TestCase):
             profeex.requests.get = original_get
             restore_config()
 
-        self.assertEqual(client.resource_calls, ["TADDR", "TADDR"])
+        self.assertEqual(client.resource_calls, ["TADDR", "TADDR", "TADDR", "TADDR"])
+
+    def test_bandwidth_recheck_waits_after_active_until_resource_visible(self):
+        from app.resource_providers import profeex
+        from app.resource_providers.profeex import ProfeeXBandwidthProvider
+
+        client = SequencedBandwidthTronClient(
+            [
+                {"freeNetLimit": 600, "freeNetUsed": 600, "NetLimit": 0, "NetUsed": 0},
+                {"freeNetLimit": 600, "freeNetUsed": 600, "NetLimit": 0, "NetUsed": 0},
+                {"freeNetLimit": 600, "freeNetUsed": 600, "NetLimit": 350, "NetUsed": 0},
+            ]
+        )
+        provider = ProfeeXBandwidthProvider(tron_client=client)
+
+        original_post = profeex.requests.post
+        original_get = profeex.requests.get
+        restore_config = self.patch_config(profeex)
+        try:
+            profeex.requests.post = lambda *args, **kwargs: MockJsonResponse(
+                202, {"task_id": "task-1", "status": "QUEUED"}
+            )
+            profeex.requests.get = lambda *args, **kwargs: MockJsonResponse(
+                200, {"task_id": "task-1", "status": "ACTIVE"}
+            )
+            self.assertTrue(provider.acquire_bandwidth("TADDR", 350))
+        finally:
+            profeex.requests.post = original_post
+            profeex.requests.get = original_get
+            restore_config()
+
+        self.assertEqual(client.resource_calls, ["TADDR", "TADDR", "TADDR"])
 
     def test_minimal_create_response_polls_status_before_rechecking_bandwidth(self):
         from app.resource_providers import profeex
