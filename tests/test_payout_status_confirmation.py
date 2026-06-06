@@ -28,7 +28,7 @@ def reset_database():
 
     config.DATABASE = TEST_DATABASE
     config.BALANCES_DATABASE = TEST_BALANCES_DATABASE
-    config.PAYOUT_EXECUTION_AUTO_ENQUEUE_ENABLED = False
+    config.PAYOUT_EXECUTION_AUTO_ENQUEUE_ENABLED = True
     config.PAYOUT_EXECUTION_PREFLIGHT_CHECKS_ENABLED = True
     config.TRON_USDT_PAYOUT_TX_EXPIRATION_CAP_SEC = 600
     config.TRON_USDT_PAYOUT_MIN_CONFIRMATIONS = 1
@@ -175,10 +175,15 @@ class PayoutStatusConfirmationTests(unittest.TestCase):
         return payload
 
     def submit(self, **overrides):
-        return self.store_module.PayoutExecutionStore.submit(
-            self.body(**overrides),
-            authenticated_consumer="grither-pay",
-        )
+        with patch.object(
+            self.store_module.PayoutExecutionStore,
+            "enqueue_execution",
+            return_value=None,
+        ):
+            return self.store_module.PayoutExecutionStore.submit(
+                self.body(**overrides),
+                authenticated_consumer="grither-pay",
+            )
 
     def set_execution_fields(self, **fields):
         assignments = ", ".join(f"{field} = ?" for field in fields)

@@ -350,7 +350,6 @@ class PayoutExecutionStore:
         return any(
             row[field]
             for field in (
-                "resource_reservation_id",
                 "signed_raw_tx_ref",
                 "signed_raw_tx_hash",
                 "txid",
@@ -782,12 +781,21 @@ class PayoutExecutionStore:
 
     @classmethod
     def _enqueue_if_enabled(cls, row):
-        if not config.PAYOUT_EXECUTION_AUTO_ENQUEUE_ENABLED:
-            return row
+        cls._ensure_auto_enqueue_enabled()
         row = cls._safe_recover_for_enqueue(row)
         if row["state"] in (STATE_RECEIVED, STATE_VALIDATED):
             cls.enqueue_execution(row["execution_id"], row["payout_queue"])
         return row
+
+    @staticmethod
+    def _ensure_auto_enqueue_enabled():
+        if config.PAYOUT_EXECUTION_AUTO_ENQUEUE_ENABLED:
+            return
+        raise PayoutExecutionError(
+            "Payout execution auto-enqueue is disabled",
+            code="PAYOUT_EXECUTION_AUTO_ENQUEUE_DISABLED",
+            status_code=503,
+        )
 
     @classmethod
     def preflight(
@@ -878,6 +886,7 @@ class PayoutExecutionStore:
             consumer_existing = cls._enqueue_if_enabled(consumer_existing)
             return cls._row_to_status(consumer_existing, status="ACCEPTED")
 
+        cls._ensure_auto_enqueue_enabled()
         state_transition_id = str(uuid.uuid4())
         try:
             db.execute(

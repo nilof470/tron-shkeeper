@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     PAYOUT_CONSUMER_KEYS_JSON: Optional[Json[dict]] = None
     PAYOUT_CONSUMER_KEYS: Optional[dict] = None
     PAYOUT_AUTH_MAX_AGE_SECONDS: int = Field(300, ge=1)
-    PAYOUT_EXECUTION_AUTO_ENQUEUE_ENABLED: bool = False
+    PAYOUT_EXECUTION_AUTO_ENQUEUE_ENABLED: bool = True
     PAYOUT_EXECUTION_LEASE_TTL_SEC: int = Field(300, ge=1)
     PAYOUT_EXECUTION_PREFLIGHT_CHECKS_ENABLED: bool = True
     TRON_USDT_PAYOUT_TX_EXPIRATION_CAP_SEC: int = Field(600, ge=1)

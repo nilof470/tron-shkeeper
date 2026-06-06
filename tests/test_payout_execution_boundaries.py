@@ -28,7 +28,7 @@ def reset_database():
 
     config.DATABASE = TEST_DATABASE
     config.BALANCES_DATABASE = TEST_BALANCES_DATABASE
-    config.PAYOUT_EXECUTION_AUTO_ENQUEUE_ENABLED = False
+    config.PAYOUT_EXECUTION_AUTO_ENQUEUE_ENABLED = True
     config.PAYOUT_EXECUTION_LEASE_TTL_SEC = 300
     for module_name in [
         "app.payout_execution",
@@ -169,11 +169,21 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
         )
         return payload
 
-    def submit(self, **overrides):
-        return self.store_module.PayoutExecutionStore.submit(
-            self.body(**overrides),
-            authenticated_consumer="grither-pay",
-        )
+    def submit(self, _mock_enqueue=True, **overrides):
+        if not _mock_enqueue:
+            return self.store_module.PayoutExecutionStore.submit(
+                self.body(**overrides),
+                authenticated_consumer="grither-pay",
+            )
+        with patch.object(
+            self.store_module.PayoutExecutionStore,
+            "enqueue_execution",
+            return_value=None,
+        ):
+            return self.store_module.PayoutExecutionStore.submit(
+                self.body(**overrides),
+                authenticated_consumer="grither-pay",
+            )
 
     def row(self, execution_id="1"):
         return self.store_module.PayoutExecutionStore._get_row(execution_id)
@@ -238,7 +248,7 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
         self.assertEqual(status["state"], "SIGNING")
         self.assertEqual(events, [])
 
-    def test_stale_signing_with_resource_reservation_requires_reconciliation(self):
+    def test_stale_signing_with_only_resource_reservation_is_safe_to_retry(self):
         self.submit()
         self.set_execution_fields(
             state="SIGNING",
@@ -248,9 +258,10 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
 
         status = self.store_module.PayoutExecutionStore.recover_stale_signing("1")
 
-        self.assertEqual(status["state"], "RECONCILIATION_REQUIRED")
-        self.assertTrue(status["reconciliation_required"])
-        self.assertEqual(status["error_code"], "STALE_SIGNING_WITH_SIDE_EFFECT")
+        self.assertEqual(status["state"], "RECEIVED")
+        self.assertFalse(status["reconciliation_required"])
+        self.assertIsNone(status["lease_owner"])
+        self.assertIsNone(status["attempt_id"])
 
     def test_stale_signing_with_signed_artifact_requires_reconciliation(self):
         self.submit()
@@ -363,6 +374,42 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
             status["chain_check_metadata"]["signed_tx_artifact_retention"],
             "NOT_RETAINED_SPENDABLE_RAW_TX",
         )
+
+    def test_resource_ensurer_failure_after_marker_is_pre_broadcast_failure(self):
+        self.submit()
+        events = []
+
+        def resource_ensurer(destination, amount, tron_client=None):
+            row = self.row()
+            events.append(("resource_ensurer", destination, amount, tron_client))
+            self.assertEqual(row["state"], "SIGNING")
+            self.assertTrue(row["resource_reservation_id"])
+            self.assertIsNone(row["signed_raw_tx_hash"])
+            raise self.store_module.PayoutExecutionError(
+                "Unable to verify TRON USDT payout resources",
+                code="PAYOUT_RESOURCES_UNAVAILABLE",
+                status_code=503,
+            )
+
+        status = self.store_module.PayoutExecutionStore.execute(
+            "1",
+            wallet=BoundaryWallet(events, self.row),
+            resource_ensurer=resource_ensurer,
+            lease_owner="worker-1",
+        )
+
+        self.assertEqual(status["state"], "FAILED_PRE_BROADCAST")
+        self.assertFalse(status["reconciliation_required"])
+        self.assertEqual(status["failure_class"], "PREFLIGHT")
+        self.assertEqual(status["error_code"], "PAYOUT_RESOURCES_UNAVAILABLE")
+        self.assertEqual(
+            events,
+            [("resource_ensurer", DESTINATION, Decimal("25.000000"), "tron-client")],
+        )
+        row = self.row()
+        self.assertTrue(row["resource_reservation_id"])
+        self.assertIsNone(row["signed_raw_tx_hash"])
+        self.assertIsNone(row["broadcast_attempted_at"])
 
     def test_broadcast_timeout_after_signed_marker_requires_reconciliation(self):
         self.submit()
@@ -642,10 +689,25 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
             "enqueue_execution",
             side_effect=lambda execution_id, queue: calls.append((execution_id, queue)),
         ):
-            response = self.submit()
+            response = self.submit(_mock_enqueue=False)
 
         self.assertEqual(response["state"], "RECEIVED")
         self.assertEqual(calls, [("1", "tron_usdt_fee_payouts")])
+
+    def test_submit_rejects_when_auto_enqueue_disabled(self):
+        from app.config import config
+
+        config.PAYOUT_EXECUTION_AUTO_ENQUEUE_ENABLED = False
+
+        with self.assertRaisesRegex(
+            self.store_module.PayoutExecutionError,
+            "auto-enqueue is disabled",
+        ) as ctx:
+            self.submit()
+
+        self.assertEqual(ctx.exception.code, "PAYOUT_EXECUTION_AUTO_ENQUEUE_DISABLED")
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertIsNone(self.row())
 
     def test_duplicate_submit_auto_reenqueues_safe_existing_execution(self):
         from app.config import config
@@ -658,8 +720,8 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
             "enqueue_execution",
             side_effect=lambda execution_id, queue: calls.append((execution_id, queue)),
         ):
-            first = self.submit()
-            second = self.submit()
+            first = self.submit(_mock_enqueue=False)
+            second = self.submit(_mock_enqueue=False)
 
         self.assertEqual(first["state"], "RECEIVED")
         self.assertEqual(second["state"], "RECEIVED")
@@ -688,7 +750,7 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
             "enqueue_execution",
             side_effect=lambda execution_id, queue: calls.append((execution_id, queue)),
         ):
-            response = self.submit()
+            response = self.submit(_mock_enqueue=False)
 
         self.assertEqual(response["state"], "RECEIVED")
         self.assertEqual(response["lease_owner"], None)
