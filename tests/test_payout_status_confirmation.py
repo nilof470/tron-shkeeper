@@ -201,7 +201,14 @@ class PayoutStatusConfirmationTests(unittest.TestCase):
         )
         db.commit()
 
-    def preflight_with_runtime(self, *, wallet_balance=Decimal("100"), quote=None, worker_ready=True):
+    def preflight_with_runtime(
+        self,
+        *,
+        wallet_balance=Decimal("100"),
+        quote=None,
+        worker_ready=True,
+        execution_id="1",
+    ):
         payout_status = importlib.import_module("app.payout_status")
         quote = quote or FakeQuote()
         with patch.object(payout_status, "Wallet", lambda symbol: FakeWallet(symbol, wallet_balance)):
@@ -215,9 +222,13 @@ class PayoutStatusConfirmationTests(unittest.TestCase):
                     "usdt_payout_worker_ready",
                     lambda: worker_ready,
                 ):
+                    payload = self.body(
+                        **({"execution_id": execution_id} if execution_id is not None else {})
+                    )
                     return self.store_module.PayoutExecutionStore.preflight(
-                        self.body(),
+                        payload,
                         authenticated_consumer="grither-pay",
+                        execution_id=execution_id,
                     )
 
     def test_preflight_rejects_invalid_address(self):
@@ -244,6 +255,38 @@ class PayoutStatusConfirmationTests(unittest.TestCase):
 
         with self.assertRaises(self.store_module.PayoutExecutionError) as ctx:
             self.preflight_with_runtime(quote=quote)
+
+        self.assertEqual(ctx.exception.code, "DESTINATION_NOT_ACTIVATED")
+
+    def test_execution_preflight_allows_unactivated_destination_when_auto_activation_enabled(self):
+        original_flag = self.store_module.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION
+        self.store_module.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION = True
+        try:
+            quote = FakeQuote(
+                submit_ready=False,
+                code="DESTINATION_NOT_ACTIVATED",
+                reason="TRON payout destination is not activated",
+            )
+            result = self.preflight_with_runtime(quote=quote, execution_id="1")
+        finally:
+            self.store_module.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION = original_flag
+
+        self.assertEqual(result["resource_quote"]["blocking_code"], "DESTINATION_NOT_ACTIVATED")
+        self.assertTrue(result["destination_activation_submit_eligible"])
+
+    def test_legacy_preflight_still_rejects_unactivated_destination(self):
+        original_flag = self.store_module.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION
+        self.store_module.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION = True
+        try:
+            quote = FakeQuote(
+                submit_ready=False,
+                code="DESTINATION_NOT_ACTIVATED",
+                reason="TRON payout destination is not activated",
+            )
+            with self.assertRaises(self.store_module.PayoutExecutionError) as ctx:
+                self.preflight_with_runtime(quote=quote, execution_id=None)
+        finally:
+            self.store_module.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION = original_flag
 
         self.assertEqual(ctx.exception.code, "DESTINATION_NOT_ACTIVATED")
 

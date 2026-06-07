@@ -816,7 +816,10 @@ class PayoutExecutionStore:
             from .payout_status import PayoutStatusError, run_tron_usdt_preflight_checks
 
             try:
-                runtime = run_tron_usdt_preflight_checks(canonical)
+                runtime = run_tron_usdt_preflight_checks(
+                    canonical,
+                    allow_destination_auto_activation=execution_id is not None,
+                )
             except PayoutStatusError as exc:
                 raise PayoutExecutionError(
                     str(exc),

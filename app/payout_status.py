@@ -38,7 +38,7 @@ def expected_source_wallet_address(row):
     )
 
 
-def run_tron_usdt_preflight_checks(canonical):
+def run_tron_usdt_preflight_checks(canonical, *, allow_destination_auto_activation=False):
     if not usdt_payout_worker_ready():
         raise PayoutStatusError(
             "TRON USDT payout worker is not ready",
@@ -75,6 +75,15 @@ def run_tron_usdt_preflight_checks(canonical):
             status_code=503,
         ) from exc
     if not quote.submit_ready:
+        if (
+            allow_destination_auto_activation
+            and config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION
+            and quote.blocking_code == "DESTINATION_NOT_ACTIVATED"
+        ):
+            return {
+                "resource_quote": quote.to_dict(),
+                "destination_activation_submit_eligible": True,
+            }
         raise PayoutStatusError(
             quote.blocking_reason or "TRON USDT payout resources are not ready",
             code=quote.blocking_code or "PAYOUT_RESOURCE_UNAVAILABLE",
