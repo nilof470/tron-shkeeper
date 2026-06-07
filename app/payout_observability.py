@@ -1,15 +1,27 @@
 import re
 
-from prometheus_client import Counter
+from prometheus_client import Counter, Histogram
 
 
 METRIC_ERROR_CODE_RE = re.compile(r"^[A-Z0-9_:-]{1,80}$")
 PAYOUT_API_OPERATIONS = {"preflight", "submit", "status"}
+DESTINATION_ACTIVATION_RESULTS = {"success", "retryable_error", "terminal_error"}
 
 tron_payout_request_failed = Counter(
     "tron_payout_request_failed",
     "TRON payout API requests rejected by operation and bounded error code.",
     ("operation", "code"),
+)
+
+tron_payout_destination_activation_total = Counter(
+    "tron_payout_destination_activation",
+    "TRON payout destination activation attempts by result.",
+    ("result",),
+)
+
+tron_payout_destination_activation_duration_seconds = Histogram(
+    "tron_payout_destination_activation_duration_seconds",
+    "TRON payout destination activation duration in seconds.",
 )
 
 
@@ -46,5 +58,25 @@ def record_payout_request_failed(operation, code):
     ).inc()
 
 
+def _metric_activation_result(result):
+    result = str(result or "").strip().lower()
+    return result if result in DESTINATION_ACTIVATION_RESULTS else "terminal_error"
+
+
+def record_destination_activation(result, duration_seconds):
+    tron_payout_destination_activation_total.labels(
+        result=_metric_activation_result(result),
+    ).inc()
+    tron_payout_destination_activation_duration_seconds.observe(
+        max(0.0, float(duration_seconds or 0.0))
+    )
+
+
+def clear_destination_activation_metrics():
+    tron_payout_destination_activation_total.clear()
+    tron_payout_destination_activation_duration_seconds._metric_init()
+
+
 def clear_payout_request_metrics():
     tron_payout_request_failed.clear()
+    clear_destination_activation_metrics()
