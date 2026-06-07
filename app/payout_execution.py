@@ -29,6 +29,15 @@ STATE_FAILED_PRE_BROADCAST = "FAILED_PRE_BROADCAST"
 STATE_FAILED_CHAIN_TERMINAL = "FAILED_CHAIN_TERMINAL"
 STATE_RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
 UNSAFE_RECOVERY_STATES = (STATE_SIGNING, STATE_SIGNED, STATE_BROADCASTING)
+RETRYABLE_PRE_BROADCAST_ERROR_CODES = {
+    "PAYOUT_RESOURCE_LOCK_UNAVAILABLE",
+    "PAYOUT_DESTINATION_ACTIVATION_PENDING",
+    "PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE",
+    "PAYOUT_DESTINATION_ACTIVATION_DUPLICATE",
+    "PAYOUT_DESTINATION_ACTIVATION_TIMEOUT",
+    "PAYOUT_DESTINATION_ACTIVATION_QUOTE_UNAVAILABLE",
+    "PAYOUT_RESOURCE_PROVIDER_UNAVAILABLE",
+}
 NO_DOWNGRADE_STATES = (
     STATE_BROADCASTED,
     STATE_CONFIRMING,
@@ -563,9 +572,9 @@ class PayoutExecutionStore:
             and exc.code == "PAYOUT_EXECUTION_CAS_CONFLICT"
         ):
             return cls._row_to_status(row)
+        error_code = getattr(exc, "code", None)
         if (
-            isinstance(exc, PayoutExecutionError)
-            and exc.code == "PAYOUT_RESOURCE_LOCK_UNAVAILABLE"
+            error_code in RETRYABLE_PRE_BROADCAST_ERROR_CODES
             and not cls._has_unsafe_side_effect(row)
         ):
             row = cls._transition(
@@ -575,9 +584,10 @@ class PayoutExecutionStore:
                 lease_expires_at=None,
                 attempt_id=None,
                 failure_class="TRANSIENT",
-                error_code=exc.code,
+                error_code=error_code,
                 error_message=str(exc),
                 reconciliation_required=0,
+                resource_reservation_id=None,
             )
             return cls._row_to_status(row)
         if cls._has_unsafe_side_effect(row):
@@ -704,7 +714,12 @@ class PayoutExecutionStore:
                         "Signed transaction evidence exists but signed transaction "
                         "artifact is not available in worker memory"
                     )
-                resource_ensurer(destination, amount, tron_client=wallet.client)
+                resource_ensurer(
+                    destination,
+                    amount,
+                    tron_client=wallet.client,
+                    allow_destination_activation=True,
+                )
                 signed_tx = wallet.build_signed_transfer(
                     destination,
                     amount,

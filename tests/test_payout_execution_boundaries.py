@@ -333,9 +333,19 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
         self.submit()
         events = []
 
-        def resource_ensurer(destination, amount, tron_client=None):
+        def resource_ensurer(
+            destination, amount, tron_client=None, allow_destination_activation=False
+        ):
             row = self.row()
-            events.append(("resource_ensurer", destination, amount, tron_client))
+            events.append(
+                (
+                    "resource_ensurer",
+                    destination,
+                    amount,
+                    tron_client,
+                    allow_destination_activation,
+                )
+            )
             self.assertEqual(row["state"], "SIGNING")
             self.assertTrue(row["resource_reservation_id"])
             self.assertIsNone(row["signed_raw_tx_hash"])
@@ -358,7 +368,13 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
             events,
             [
                 ("lock_enter",),
-                ("resource_ensurer", DESTINATION, Decimal("25.000000"), "tron-client"),
+                (
+                    "resource_ensurer",
+                    DESTINATION,
+                    Decimal("25.000000"),
+                    "tron-client",
+                    True,
+                ),
                 ("build_signed_transfer", DESTINATION, Decimal("25.000000")),
                 ("broadcast", "tx-1"),
                 ("lock_exit",),
@@ -379,9 +395,19 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
         self.submit()
         events = []
 
-        def resource_ensurer(destination, amount, tron_client=None):
+        def resource_ensurer(
+            destination, amount, tron_client=None, allow_destination_activation=False
+        ):
             row = self.row()
-            events.append(("resource_ensurer", destination, amount, tron_client))
+            events.append(
+                (
+                    "resource_ensurer",
+                    destination,
+                    amount,
+                    tron_client,
+                    allow_destination_activation,
+                )
+            )
             self.assertEqual(row["state"], "SIGNING")
             self.assertTrue(row["resource_reservation_id"])
             self.assertIsNone(row["signed_raw_tx_hash"])
@@ -404,7 +430,15 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
         self.assertEqual(status["error_code"], "PAYOUT_RESOURCES_UNAVAILABLE")
         self.assertEqual(
             events,
-            [("resource_ensurer", DESTINATION, Decimal("25.000000"), "tron-client")],
+            [
+                (
+                    "resource_ensurer",
+                    DESTINATION,
+                    Decimal("25.000000"),
+                    "tron-client",
+                    True,
+                )
+            ],
         )
         row = self.row()
         self.assertTrue(row["resource_reservation_id"])
@@ -497,6 +531,103 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
         self.assertEqual(status["failure_class"], "TRANSIENT")
         self.assertEqual(status["error_code"], "PAYOUT_RESOURCE_LOCK_UNAVAILABLE")
         self.assertEqual(events, [])
+
+    def test_retryable_activation_resource_error_returns_to_received_without_refund_state(self):
+        from app import payout_resources
+        from app.payout_destination_activation import DestinationActivationError
+
+        self.submit()
+        original_flag = (
+            payout_resources.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION
+        )
+        payout_resources.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION = True
+        quote = payout_resources.PayoutResourceQuote(
+            source_address="fee-deposit",
+            destination=DESTINATION,
+            amount="25.000000",
+            activation_required=True,
+            estimated_trx_burned="1.1",
+            energy=payout_resources.ResourceReadiness("profeex", 65000, 0, 65000),
+            bandwidth=payout_resources.ResourceReadiness("profeex", 346, 0, 346),
+            submit_ready=False,
+            blocking_code="DESTINATION_NOT_ACTIVATED",
+            blocking_reason="TRON payout destination is not activated",
+        )
+
+        def estimate(destination, amount, tron_client=None):
+            return quote
+
+        def activate(destination, *, quote_fn):
+            raise DestinationActivationError(
+                "ProfeeX activation unavailable",
+                code="PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE",
+                temporary=True,
+            )
+
+        original_estimate = (
+            payout_resources.estimate_fee_deposit_resources_for_usdt_payout
+        )
+        original_activation = payout_resources.ensure_destination_activated
+        payout_resources.estimate_fee_deposit_resources_for_usdt_payout = estimate
+        payout_resources.ensure_destination_activated = activate
+        events = []
+        try:
+            status = self.store_module.PayoutExecutionStore.execute(
+                "1",
+                wallet=BoundaryWallet(events, self.row),
+                resource_ensurer=(
+                    payout_resources.ensure_fee_deposit_resources_for_usdt_payout
+                ),
+                lease_owner="worker-1",
+            )
+        finally:
+            payout_resources.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION = (
+                original_flag
+            )
+            payout_resources.estimate_fee_deposit_resources_for_usdt_payout = (
+                original_estimate
+            )
+            payout_resources.ensure_destination_activated = original_activation
+
+        self.assertEqual(status["state"], "RECEIVED")
+        self.assertEqual(status["failure_class"], "TRANSIENT")
+        self.assertEqual(
+            status["error_code"], "PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE"
+        )
+        self.assertFalse(status["reconciliation_required"])
+        row = self.row()
+        self.assertIsNone(row["resource_reservation_id"])
+        self.assertIsNone(row["signed_raw_tx_hash"])
+        self.assertIsNone(row["broadcast_attempted_at"])
+
+    def test_terminal_activation_failure_stays_failed_pre_broadcast_without_reconciliation(self):
+        self.submit()
+        events = []
+
+        def resource_ensurer(
+            destination, amount, tron_client=None, allow_destination_activation=False
+        ):
+            events.append((destination, amount, allow_destination_activation))
+            raise self.store_module.PayoutExecutionError(
+                "Invalid TRON destination",
+                code="INVALID_ADDRESS",
+                status_code=422,
+            )
+
+        status = self.store_module.PayoutExecutionStore.execute(
+            "1",
+            wallet=BoundaryWallet(events, self.row),
+            resource_ensurer=resource_ensurer,
+            lease_owner="worker-1",
+        )
+
+        self.assertEqual(status["state"], "FAILED_PRE_BROADCAST")
+        self.assertEqual(status["failure_class"], "PREFLIGHT")
+        self.assertEqual(status["error_code"], "INVALID_ADDRESS")
+        self.assertFalse(status["reconciliation_required"])
+        row = self.row()
+        self.assertIsNone(row["broadcast_attempted_at"])
+        self.assertEqual(events[0][2], True)
 
     def test_execute_reloads_row_after_lock_before_side_effects(self):
         self.submit()

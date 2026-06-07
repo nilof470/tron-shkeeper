@@ -9,6 +9,10 @@ import tronpy.keys
 from app.config import config
 from app.connection_manager import ConnectionManager
 from app.logging import logger
+from app.payout_destination_activation import (
+    DestinationActivationError,
+    ensure_destination_activated,
+)
 from app.resource_providers.factory import get_bandwidth_provider, get_energy_provider
 from app.resource_providers.profeex import ProfeeXProvider
 from app.schemas import KeyType
@@ -171,6 +175,7 @@ def ensure_fee_deposit_resources_for_usdt_payout(
     amount: Decimal,
     *,
     tron_client=None,
+    allow_destination_activation: bool = False,
 ) -> PayoutResourceQuote:
     client = tron_client or ConnectionManager.client()
     quote = estimate_fee_deposit_resources_for_usdt_payout(
@@ -178,12 +183,33 @@ def ensure_fee_deposit_resources_for_usdt_payout(
         amount,
         tron_client=client,
     )
+    if (
+        not quote.submit_ready
+        and quote.blocking_code == "DESTINATION_NOT_ACTIVATED"
+        and allow_destination_activation
+        and config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION
+    ):
+        try:
+            ensure_destination_activated(
+                destination,
+                quote_fn=lambda receiver: estimate_usdt_transfer_fee_via_profeex(
+                    receiver
+                ),
+            )
+        except DestinationActivationError as exc:
+            raise PayoutResourceError(str(exc), code=exc.code) from exc
+        quote = estimate_fee_deposit_resources_for_usdt_payout(
+            destination,
+            amount,
+            tron_client=client,
+        )
     if not quote.submit_ready:
         raise PayoutResourceError(
             quote.blocking_reason or "TRON USDT payout resources are not ready",
             code=quote.blocking_code,
         )
 
+    provisioned = False
     if quote.energy.deficit:
         energy_provider = configured_energy_provider(client)
         if energy_provider is None:
@@ -207,6 +233,7 @@ def ensure_fee_deposit_resources_for_usdt_payout(
                 "Energy provider failed to prepare resources",
                 code="PROVIDER_FAILED",
             )
+        provisioned = True
 
     if quote.bandwidth.deficit:
         bandwidth_provider = get_bandwidth_provider(tron_client=client)
@@ -227,6 +254,15 @@ def ensure_fee_deposit_resources_for_usdt_payout(
                 "Bandwidth provider failed to prepare resources",
                 code="PROVIDER_FAILED",
             )
+        provisioned = True
+
+    if (
+        not provisioned
+        and quote.submit_ready
+        and quote.energy.deficit == 0
+        and quote.bandwidth.deficit == 0
+    ):
+        return quote
 
     for attempt in range(config.PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_ATTEMPTS):
         refreshed = estimate_fee_deposit_resources_for_usdt_payout(

@@ -290,6 +290,39 @@ class PayoutTaskResourceProvisioningTests(unittest.TestCase):
         self.assertEqual(result[0]["status"], "success")
         self.assertEqual(posted, [(result, "USDT")])
 
+    def test_legacy_payout_does_not_allow_destination_activation(self):
+        tasks = load_tasks()
+        calls = []
+
+        def resource_ensurer(
+            destination, amount, tron_client=None, allow_destination_activation=False
+        ):
+            calls.append(allow_destination_activation)
+            raise RuntimeError("stop before transfer")
+
+        original = tasks.ensure_fee_deposit_resources_for_usdt_payout
+        events, posted, restore = self.patch_tasks(tasks, enabled=True)
+        task_globals = tasks.payout.run.__globals__
+        tasks.ensure_fee_deposit_resources_for_usdt_payout = resource_ensurer
+        task_globals["ensure_fee_deposit_resources_for_usdt_payout"] = resource_ensurer
+        try:
+            with self.assertRaises(RuntimeError):
+                tasks.payout.run(
+                    [
+                        {
+                            "dst": DESTINATION,
+                            "amount": Decimal("1.25"),
+                            "ensure_usdt_payout_resources": True,
+                        }
+                    ],
+                    "USDT",
+                )
+        finally:
+            tasks.ensure_fee_deposit_resources_for_usdt_payout = original
+            restore()
+
+        self.assertEqual(calls, [False])
+
     def test_payout_raises_when_wallet_transfer_returns_error_status(self):
         tasks = load_tasks()
 
