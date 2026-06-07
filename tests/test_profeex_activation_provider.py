@@ -133,6 +133,36 @@ class ProfeeXActivationProviderTests(unittest.TestCase):
         self.assertEqual(ctx.exception.error_code, "INVALID_ADDRESS")
         self.assertFalse(ctx.exception.temporary)
 
+    def test_activation_configuration_error_is_terminal_even_on_500(self):
+        profeex.requests.post = lambda *args, **kwargs: FakeResponse(
+            500,
+            {"error_code": "CONFIGURATION_ERROR", "message": "bad api key"},
+        )
+
+        with self.assertRaises(profeex.ProfeeXOrderError) as ctx:
+            profeex.ProfeeXProvider().activate_address(
+                "TTMqzSAwwcM1UqMy7Up2eQuNXZ6uUZ9AN5"
+            )
+
+        self.assertEqual(ctx.exception.resource_name, "activation")
+        self.assertEqual(ctx.exception.error_code, "CONFIGURATION_ERROR")
+        self.assertFalse(ctx.exception.temporary)
+
+    def test_activation_500_without_terminal_code_is_retryable(self):
+        profeex.requests.post = lambda *args, **kwargs: FakeResponse(
+            500,
+            {"message": "server error"},
+        )
+
+        with self.assertRaises(profeex.ProfeeXOrderError) as ctx:
+            profeex.ProfeeXProvider().activate_address(
+                "TTMqzSAwwcM1UqMy7Up2eQuNXZ6uUZ9AN5"
+            )
+
+        self.assertEqual(ctx.exception.resource_name, "activation")
+        self.assertEqual(ctx.exception.error_code, "UNKNOWN_ERROR")
+        self.assertTrue(ctx.exception.temporary)
+
     def test_wait_for_activation_treats_completed_as_success(self):
         polls = iter(
             [
@@ -149,3 +179,47 @@ class ProfeeXActivationProviderTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "COMPLETED")
+
+    def test_wait_for_activation_failed_with_string_details_raises_order_error(self):
+        profeex.requests.get = lambda *args, **kwargs: FakeResponse(
+            200,
+            {
+                "task_id": "task-1",
+                "status": "FAILED",
+                "error_code": "PROCESSING_FAILED",
+                "details": "failed",
+            },
+        )
+
+        with self.assertRaises(profeex.ProfeeXOrderError) as ctx:
+            profeex.ProfeeXProvider().wait_for_activation(
+                FakeSettings(),
+                "task-1",
+                {"task_id": "task-1", "status": "QUEUED"},
+            )
+
+        self.assertEqual(ctx.exception.resource_name, "activation")
+        self.assertEqual(ctx.exception.error_code, "PROCESSING_FAILED")
+        self.assertIn("failed", str(ctx.exception))
+
+    def test_wait_until_active_logs_order_error_before_returning_none(self):
+        warnings = []
+        original_warning = profeex.logger.warning
+        profeex.logger.warning = warnings.append
+        try:
+            result = profeex.ProfeeXProvider()._wait_until_active(
+                FakeSettings(),
+                "task-1",
+                {
+                    "task_id": "task-1",
+                    "status": "FAILED",
+                    "error_code": "PROCESSING_FAILED",
+                    "details": {"error_message": "delegation failed"},
+                },
+                "energy",
+            )
+        finally:
+            profeex.logger.warning = original_warning
+
+        self.assertIsNone(result)
+        self.assertTrue(any("delegation failed" in warning for warning in warnings))

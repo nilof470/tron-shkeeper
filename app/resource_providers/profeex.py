@@ -27,6 +27,12 @@ VALIDATION_ERROR_CODES = {
     "INVALID_ADDRESS",
     "INVALID_PARAMETERS",
 }
+ACTIVATION_TERMINAL_ERROR_CODES = VALIDATION_ERROR_CODES | {
+    "CONFIGURATION_ERROR",
+    "INSUFFICIENT_BALANCE",
+    "UNKNOWN_ERROR",
+}
+ACTIVATION_RETRYABLE_HTTP_STATUS_CODES = {408, 429}
 
 
 class ProfeeXOrderError(RuntimeError):
@@ -185,7 +191,7 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
 
         data = self._safe_json(response)
         code = self._error_code_from_payload(data)
-        temporary = code in TEMPORARY_ERROR_CODES or code in OPERATIONAL_ERROR_CODES
+        temporary = self._activation_error_is_temporary(response.status_code, code)
         raise ProfeeXOrderError(
             "activation",
             f"ProfeeX activation rejected with status {response.status_code}: {response.text}",
@@ -373,11 +379,17 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
         self, resource_name: str, order: dict
     ) -> ProfeeXOrderError:
         error_code = order.get("error_code")
-        details = order.get("details") or {}
-        message = (
-            details.get("error_message")
-            or f"ProfeeX {resource_name} order failed: {order}"
-        )
+        raw_details = order.get("details")
+        details = raw_details if isinstance(raw_details, dict) else {}
+        message = details.get("error_message")
+        if not message and isinstance(order.get("message"), str):
+            message = order["message"]
+        if not message and isinstance(order.get("detail"), str):
+            message = order["detail"]
+        if not message and isinstance(raw_details, str):
+            message = raw_details
+        if not message:
+            message = f"ProfeeX {resource_name} order failed: {order}"
         temporary = error_code in TEMPORARY_ERROR_CODES
         return ProfeeXOrderError(resource_name, message, error_code, temporary)
 
@@ -479,7 +491,8 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
                 success_statuses=self.SUCCESS_STATUSES,
                 failure_statuses=self.FAILURE_STATUSES,
             )
-        except ProfeeXOrderError:
+        except ProfeeXOrderError as exc:
+            logger.warning(f"ProfeeX {resource_name} order {task_id} failed: {exc}")
             return None
 
     def _wait_for_status(
@@ -585,6 +598,18 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
         if isinstance(detail, dict) and isinstance(detail.get("error_code"), str):
             return detail["error_code"]
         return None
+
+    @staticmethod
+    def _activation_error_is_temporary(status_code, error_code):
+        if error_code in TEMPORARY_ERROR_CODES:
+            return True
+        if error_code in ACTIVATION_TERMINAL_ERROR_CODES:
+            return False
+        if status_code in ACTIVATION_RETRYABLE_HTTP_STATUS_CODES:
+            return True
+        if 500 <= status_code <= 599:
+            return True
+        return False
 
     @staticmethod
     def _headers(settings) -> dict:
