@@ -74,6 +74,8 @@ def record_destination_activation(result, duration_seconds):
 
 def clear_destination_activation_metrics():
     tron_payout_destination_activation_total.clear()
+    # prometheus-client's Histogram.clear() needs label storage; this histogram
+    # is unlabeled in the installed version, so reset its bucket state directly.
     tron_payout_destination_activation_duration_seconds._metric_init()
 
 

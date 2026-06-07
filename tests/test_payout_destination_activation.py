@@ -58,6 +58,31 @@ class RejectingLockRedis(FakeRedis):
         return RejectingLock(self.events)
 
 
+class RedisGetFailingRedis(FakeRedis):
+    def get(self, key):
+        self.events.append(("get", key))
+        raise activation.redis.exceptions.RedisError("redis get unavailable")
+
+
+class RedisSetFailingRedis(FakeRedis):
+    def setex(self, key, ttl, value):
+        self.events.append(("setex", key, ttl, json.loads(value)))
+        raise activation.redis.exceptions.RedisError("redis set unavailable")
+
+
+class RedisSecondSetFailingRedis(FakeRedis):
+    def __init__(self):
+        super().__init__()
+        self.setex_calls = 0
+
+    def setex(self, key, ttl, value):
+        self.setex_calls += 1
+        self.events.append(("setex", key, ttl, json.loads(value)))
+        if self.setex_calls > 1:
+            raise activation.redis.exceptions.RedisError("redis set unavailable")
+        self.values[key] = value.encode("utf-8") if isinstance(value, str) else value
+
+
 class FakeProvider:
     def __init__(self):
         self.calls = []
@@ -91,6 +116,23 @@ class DuplicateProvider(FakeProvider):
             "DUPLICATE_REQUEST",
             temporary=True,
         )
+
+
+class TimeoutProvider(FakeProvider):
+    def wait_for_activation(self, settings, task_id, order):
+        self.calls.append(("wait", task_id, order["status"]))
+        raise ProfeeXOrderError(
+            "activation",
+            "provider timeout",
+            "REQUEST_TIMEOUT",
+            temporary=True,
+        )
+
+
+class MalformedOrderProvider(FakeProvider):
+    def activate_address(self, destination):
+        self.calls.append(("activate", destination))
+        return {"target": destination, "status": "QUEUED"}
 
 
 class DestinationActivationTests(unittest.TestCase):
@@ -196,6 +238,233 @@ class DestinationActivationTests(unittest.TestCase):
         self.assertEqual(provider.calls, [])
         self.assertTrue(any(event[0] == "lock_acquire" for event in redis_client.events))
         self.assertFalse(any(event[0] == "lock_release" for event in redis_client.events))
+
+    def test_unknown_quote_raises_before_provider_and_records_retryable_metric(self):
+        from app.payout_observability import clear_destination_activation_metrics
+
+        for quote in (None, {"energy_required": 65000}):
+            with self.subTest(quote=quote):
+                clear_destination_activation_metrics()
+                redis_client = FakeRedis()
+                provider = FakeProvider()
+
+                with self.assertRaises(activation.DestinationActivationError) as ctx:
+                    activation.ensure_destination_activated(
+                        DESTINATION,
+                        quote_fn=lambda destination: quote,
+                        provider=provider,
+                        redis_client=redis_client,
+                    )
+
+                self.assertEqual(
+                    ctx.exception.code,
+                    "PAYOUT_DESTINATION_ACTIVATION_QUOTE_UNAVAILABLE",
+                )
+                self.assertTrue(ctx.exception.temporary)
+                self.assertEqual(provider.calls, [])
+                self.assertFalse(any(event[0] == "lock" for event in redis_client.events))
+                text = prometheus_client.generate_latest().decode()
+                self.assertIn(
+                    'tron_payout_destination_activation_total{result="retryable_error"} 1.0',
+                    text,
+                )
+                self.assertNotIn(
+                    'tron_payout_destination_activation_total{result="success"} 1.0',
+                    text,
+                )
+
+    def test_quote_exception_raises_before_provider(self):
+        redis_client = FakeRedis()
+        provider = FakeProvider()
+
+        def quote(destination):
+            raise RuntimeError("quote unavailable")
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=quote,
+                provider=provider,
+                redis_client=redis_client,
+            )
+
+        self.assertEqual(
+            ctx.exception.code, "PAYOUT_DESTINATION_ACTIVATION_QUOTE_UNAVAILABLE"
+        )
+        self.assertTrue(ctx.exception.temporary)
+        self.assertEqual(provider.calls, [])
+        text = prometheus_client.generate_latest().decode()
+        self.assertIn(
+            'tron_payout_destination_activation_total{result="retryable_error"} 1.0',
+            text,
+        )
+
+    def test_redis_get_failure_raises_before_provider(self):
+        redis_client = RedisGetFailingRedis()
+        provider = FakeProvider()
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True),
+                provider=provider,
+                redis_client=redis_client,
+            )
+
+        self.assertEqual(
+            ctx.exception.code, "PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE"
+        )
+        self.assertTrue(ctx.exception.temporary)
+        self.assertEqual(provider.calls, [])
+        text = prometheus_client.generate_latest().decode()
+        self.assertIn(
+            'tron_payout_destination_activation_total{result="retryable_error"} 1.0',
+            text,
+        )
+
+    def test_redis_set_failure_after_activation_records_retryable_error(self):
+        redis_client = RedisSetFailingRedis()
+        provider = FakeProvider()
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True),
+                provider=provider,
+                redis_client=redis_client,
+            )
+
+        self.assertEqual(
+            ctx.exception.code, "PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE"
+        )
+        self.assertTrue(ctx.exception.temporary)
+        self.assertEqual(provider.calls, [("activate", DESTINATION)])
+        text = prometheus_client.generate_latest().decode()
+        self.assertIn(
+            'tron_payout_destination_activation_total{result="retryable_error"} 1.0',
+            text,
+        )
+        self.assertNotIn(
+            'tron_payout_destination_activation_total{result="success"} 1.0',
+            text,
+        )
+
+    def test_wait_error_mapping_survives_failure_record_store_error(self):
+        redis_client = RedisSecondSetFailingRedis()
+        provider = TimeoutProvider()
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True),
+                provider=provider,
+                redis_client=redis_client,
+            )
+
+        self.assertEqual(ctx.exception.code, "PAYOUT_DESTINATION_ACTIVATION_TIMEOUT")
+        self.assertTrue(ctx.exception.temporary)
+        self.assertEqual(
+            provider.calls, [("activate", DESTINATION), ("wait", "task-1", "QUEUED")]
+        )
+
+    def test_failed_record_replays_terminal_error_without_provider_call(self):
+        redis_client = FakeRedis()
+        redis_client.values[activation.activation_record_key(DESTINATION)] = json.dumps(
+            {
+                "destination": DESTINATION,
+                "task_id": "task-failed",
+                "status": "FAILED",
+                "error_code": "PROCESSING_FAILED",
+            }
+        ).encode("utf-8")
+        provider = FakeProvider()
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True),
+                provider=provider,
+                redis_client=redis_client,
+            )
+
+        self.assertEqual(ctx.exception.code, "PROCESSING_FAILED")
+        self.assertFalse(ctx.exception.temporary)
+        self.assertEqual(provider.calls, [])
+        text = prometheus_client.generate_latest().decode()
+        self.assertIn(
+            'tron_payout_destination_activation_total{result="terminal_error"} 1.0',
+            text,
+        )
+
+    def test_completed_record_with_active_quote_returns_success_without_provider_call(self):
+        redis_client = FakeRedis()
+        redis_client.values[activation.activation_record_key(DESTINATION)] = json.dumps(
+            {
+                "destination": DESTINATION,
+                "task_id": "task-completed",
+                "status": "COMPLETED",
+            }
+        ).encode("utf-8")
+        provider = FakeProvider()
+
+        result = activation.ensure_destination_activated(
+            DESTINATION,
+            quote_fn=self.quote_sequence(True, True, False),
+            provider=provider,
+            redis_client=redis_client,
+        )
+
+        self.assertTrue(result.activated)
+        self.assertEqual(result.task_id, "task-completed")
+        self.assertEqual(result.status, "COMPLETED")
+        self.assertEqual(provider.calls, [])
+        text = prometheus_client.generate_latest().decode()
+        self.assertIn(
+            'tron_payout_destination_activation_total{result="success"} 1.0',
+            text,
+        )
+
+    def test_missing_profeex_config_on_pending_record_raises_before_wait(self):
+        activation.config.PROFEEX = None
+        redis_client = FakeRedis()
+        redis_client.values[activation.activation_record_key(DESTINATION)] = json.dumps(
+            {
+                "destination": DESTINATION,
+                "task_id": "task-existing",
+                "status": "PROCESSING",
+            }
+        ).encode("utf-8")
+        provider = FakeProvider()
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True),
+                provider=provider,
+                redis_client=redis_client,
+            )
+
+        self.assertEqual(ctx.exception.code, "CONFIGURATION_ERROR")
+        self.assertFalse(ctx.exception.temporary)
+        self.assertEqual(provider.calls, [])
+
+    def test_malformed_activation_order_raises_terminal_invalid_response(self):
+        redis_client = FakeRedis()
+        provider = MalformedOrderProvider()
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True),
+                provider=provider,
+                redis_client=redis_client,
+            )
+
+        self.assertEqual(
+            ctx.exception.code, "PAYOUT_DESTINATION_ACTIVATION_INVALID_RESPONSE"
+        )
+        self.assertFalse(ctx.exception.temporary)
+        self.assertEqual(provider.calls, [("activate", DESTINATION)])
 
     def test_existing_task_record_is_resumed(self):
         redis_client = FakeRedis()
