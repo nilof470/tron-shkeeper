@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     TRON_USDT_PAYOUT_QUEUE: str = "tron_usdt_fee_payouts"
     TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC: int = Field(900, ge=1)
     TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC: int = Field(900, ge=0)
+    TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION: bool = False
+    TRON_USDT_DESTINATION_ACTIVATION_LOCK_TTL_SEC: int = Field(300, ge=1)
+    TRON_USDT_DESTINATION_ACTIVATION_LOCK_WAIT_SEC: int = Field(60, ge=0)
+    TRON_USDT_DESTINATION_ACTIVATION_RECORD_TTL_SEC: int = Field(86400, ge=60)
     TRON_USDT_PAYOUT_QUEUE_READINESS_TIMEOUT_SEC: float = Field(2.0, ge=0.1)
     PAYOUT_CONSUMER_KEYS_JSON: Optional[Json[dict]] = None
     PAYOUT_CONSUMER_KEYS: Optional[dict] = None
@@ -221,6 +225,17 @@ class Settings(BaseSettings):
                 "REFEE_FIXED_ENERGY_ORDER_AMOUNT must be 0 or greater than or "
                 "equal to REFEE.min_energy_order_amount"
             )
+        if self.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION:
+            if not self.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED:
+                raise ValueError(
+                    "TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED must be true "
+                    "when TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION=true"
+                )
+            if self.PROFEEX is None:
+                raise ValueError(
+                    "PROFEEX must be configured when "
+                    "TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION=true"
+                )
         if (
             self.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED
             and self.PROFEEX is None

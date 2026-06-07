@@ -42,6 +42,8 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
     PENDING_STATUSES = {"QUEUED", "PENDING", "PROCESSING"}
     SUCCESS_STATUSES = {"ACTIVE"}
     FAILURE_STATUSES = {"FAILED", "CANCELLED", "COMPLETED", "unknown"}
+    ACTIVATION_SUCCESS_STATUSES = {"ACTIVE", "COMPLETED"}
+    ACTIVATION_FAILURE_STATUSES = {"FAILED", "CANCELLED", "unknown"}
     FIXED_ENERGY_ORDER_TOLERANCE = 500
 
     def __init__(self, tron_client=None):
@@ -124,6 +126,81 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
         logger.info(
             f"ProfeeX energy for {receiver} returns after rent expiration. "
             "Skipping undelegate."
+        )
+
+    def activate_address(self, receiver: str) -> dict:
+        settings = config.PROFEEX
+        if settings is None:
+            raise ProfeeXOrderError(
+                "activation",
+                "PROFEEX config is missing. Cannot activate destination.",
+                "CONFIGURATION_ERROR",
+                temporary=False,
+            )
+        try:
+            response = requests.post(
+                self._url(settings, "/activation/activate"),
+                params={
+                    "address": receiver,
+                    "currency": settings.currency,
+                },
+                headers=self._headers(settings),
+                timeout=self.REQUEST_TIMEOUT_SEC,
+            )
+        except requests.RequestException as exc:
+            raise ProfeeXOrderError(
+                "activation",
+                f"ProfeeX activation request failed: {exc}",
+                "SERVICE_UNAVAILABLE",
+                temporary=True,
+            ) from exc
+
+        if response.status_code == 202:
+            data = self._json_response(response, "activation")
+            task_id = self._extract_task_id(data, "activation")
+            if task_id is None:
+                raise ProfeeXOrderError(
+                    "activation",
+                    f"ProfeeX activation response has no task_id: {data}",
+                    "INVALID_PARAMETERS",
+                    temporary=False,
+                )
+            logger.info(f"ProfeeX activation accepted: {data}")
+            return data
+
+        if response.status_code == 409:
+            raise ProfeeXOrderError(
+                "activation",
+                f"ProfeeX activation duplicate or already active: {response.text}",
+                "DUPLICATE_REQUEST",
+                temporary=True,
+            )
+        if response.status_code == 503:
+            raise ProfeeXOrderError(
+                "activation",
+                f"ProfeeX activation unavailable: {response.text}",
+                "SERVICE_UNAVAILABLE",
+                temporary=True,
+            )
+
+        data = self._safe_json(response)
+        code = self._error_code_from_payload(data)
+        temporary = code in TEMPORARY_ERROR_CODES or code in OPERATIONAL_ERROR_CODES
+        raise ProfeeXOrderError(
+            "activation",
+            f"ProfeeX activation rejected with status {response.status_code}: {response.text}",
+            code or "UNKNOWN_ERROR",
+            temporary=temporary,
+        )
+
+    def wait_for_activation(self, settings, task_id: str, initial_order: dict) -> dict:
+        return self._wait_for_status(
+            settings,
+            task_id,
+            initial_order,
+            "activation",
+            success_statuses=self.ACTIVATION_SUCCESS_STATUSES,
+            failure_statuses=self.ACTIVATION_FAILURE_STATUSES,
         )
 
     def estimate_usdt_transfer_fee(self, receiver_address: str) -> dict | None:
@@ -393,6 +470,28 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
     def _wait_until_active(
         self, settings, task_id: str, initial_order: dict, resource_name: str
     ) -> dict | None:
+        try:
+            return self._wait_for_status(
+                settings,
+                task_id,
+                initial_order,
+                resource_name,
+                success_statuses=self.SUCCESS_STATUSES,
+                failure_statuses=self.FAILURE_STATUSES,
+            )
+        except ProfeeXOrderError:
+            return None
+
+    def _wait_for_status(
+        self,
+        settings,
+        task_id: str,
+        initial_order: dict,
+        resource_name: str,
+        *,
+        success_statuses,
+        failure_statuses,
+    ) -> dict:
         deadline = time.monotonic() + settings.timeout_sec
         order = initial_order
         last_status = None
@@ -403,25 +502,21 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
             if status != last_status:
                 logger.info(f"ProfeeX {resource_name} order {task_id} status: {status}")
                 last_status = status
-
-            if status in self.SUCCESS_STATUSES:
+            if status in success_statuses:
                 return order
-            if status in self.FAILURE_STATUSES:
-                logger.warning(
-                    f"ProfeeX {resource_name} order {task_id} failed: {order}"
-                )
-                return None
+            if status in failure_statuses:
+                raise self._order_error_from_order(resource_name, order)
             if status not in self.PENDING_STATUSES:
-                logger.warning(
-                    f"ProfeeX {resource_name} order {task_id} returned unexpected "
-                    f"status: {status}"
+                raise ProfeeXOrderError(
+                    resource_name,
+                    f"ProfeeX {resource_name} order {task_id} returned unexpected status: {status}",
+                    "UNKNOWN_ERROR",
+                    temporary=False,
                 )
-                return None
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-
             if should_sleep_before_poll:
                 sleep_for = min(settings.poll_interval_sec, remaining)
                 if sleep_for > 0:
@@ -430,19 +525,15 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
                 if remaining <= 0:
                     break
 
-            request_timeout = min(self.REQUEST_TIMEOUT_SEC, remaining)
-            if request_timeout <= 0:
-                break
-
             try:
                 response = requests.get(
                     self._url(settings, f"/delegation/status/{task_id}"),
                     headers=self._headers(settings),
-                    timeout=request_timeout,
+                    timeout=min(self.REQUEST_TIMEOUT_SEC, remaining),
                 )
-            except requests.RequestException:
+            except requests.RequestException as exc:
                 logger.warning(
-                    f"ProfeeX poll request failed for {resource_name} order {task_id}"
+                    f"ProfeeX poll request failed for {resource_name} order {task_id}: {exc}"
                 )
                 should_sleep_before_poll = True
                 continue
@@ -454,27 +545,45 @@ class ProfeeXProvider(EnergyProvider, BandwidthProvider):
                 )
                 should_sleep_before_poll = True
                 continue
-
-            try:
-                order = response.json()
-            except ValueError:
-                logger.exception(
-                    f"ProfeeX poll response is not valid JSON for "
-                    f"{resource_name} order {task_id}"
-                )
-                return None
-            if not isinstance(order, dict):
-                logger.warning(
-                    f"ProfeeX poll response is not an object for "
-                    f"{resource_name} order {task_id}: {order}"
-                )
-                return None
+            order = self._json_response(response, f"{resource_name} poll")
             should_sleep_before_poll = True
 
-        logger.warning(
-            f"ProfeeX {resource_name} order {task_id} did not reach ACTIVE status "
-            f"within {settings.timeout_sec} seconds"
+        raise ProfeeXOrderError(
+            resource_name,
+            f"ProfeeX {resource_name} order {task_id} did not reach success within "
+            f"{settings.timeout_sec} seconds",
+            "REQUEST_TIMEOUT",
+            temporary=True,
         )
+
+    @staticmethod
+    def _safe_json(response):
+        try:
+            data = response.json()
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _json_response(self, response, resource_name: str) -> dict:
+        data = self._safe_json(response)
+        if data is None:
+            raise ProfeeXOrderError(
+                resource_name,
+                f"ProfeeX {resource_name} response is not a JSON object",
+                "UNKNOWN_ERROR",
+                temporary=False,
+            )
+        return data
+
+    @staticmethod
+    def _error_code_from_payload(data):
+        if not isinstance(data, dict):
+            return None
+        if isinstance(data.get("error_code"), str):
+            return data["error_code"]
+        detail = data.get("detail")
+        if isinstance(detail, dict) and isinstance(detail.get("error_code"), str):
+            return detail["error_code"]
         return None
 
     @staticmethod

@@ -95,6 +95,47 @@ class ResourceProviderConfigTests(unittest.TestCase):
         self.assertEqual(settings.TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC, 900)
         self.assertEqual(settings.TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC, 900)
 
+    def test_auto_activate_destination_requires_resource_provisioning_enabled(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED must be true",
+        ):
+            Settings(
+                TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION=True,
+                PROFEEX='{"api_key":"secret"}',
+            )
+
+    def test_auto_activate_destination_requires_profeex_config(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "PROFEEX must be configured when TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION=true",
+        ):
+            Settings(
+                TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
+                TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION=True,
+            )
+
+    def test_auto_activate_destination_config_defaults(self):
+        settings = Settings(
+            TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
+            TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION=True,
+            PROFEEX='{"api_key":"secret"}',
+        )
+
+        self.assertTrue(settings.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION)
+        self.assertEqual(
+            settings.TRON_USDT_DESTINATION_ACTIVATION_LOCK_TTL_SEC,
+            300,
+        )
+        self.assertEqual(
+            settings.TRON_USDT_DESTINATION_ACTIVATION_LOCK_WAIT_SEC,
+            60,
+        )
+        self.assertEqual(
+            settings.TRON_USDT_DESTINATION_ACTIVATION_RECORD_TTL_SEC,
+            86400,
+        )
+
     def test_profeex_config_rejects_non_https_api_base_url(self):
         with self.assertRaises(ValidationError):
             ProfeeXConfig(
