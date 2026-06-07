@@ -396,6 +396,36 @@ class DestinationActivationTests(unittest.TestCase):
             text,
         )
 
+    def test_unknown_record_replays_terminal_error_without_provider_call(self):
+        redis_client = FakeRedis()
+        redis_client.values[activation.activation_record_key(DESTINATION)] = json.dumps(
+            {
+                "destination": DESTINATION,
+                "task_id": "task-unknown",
+                "status": "unknown",
+                "error_code": "UNKNOWN_ERROR",
+                "error_message": "provider returned unknown status",
+            }
+        ).encode("utf-8")
+        provider = FakeProvider()
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True),
+                provider=provider,
+                redis_client=redis_client,
+            )
+
+        self.assertEqual(ctx.exception.code, "UNKNOWN_ERROR")
+        self.assertFalse(ctx.exception.temporary)
+        self.assertEqual(provider.calls, [])
+        text = prometheus_client.generate_latest().decode()
+        self.assertIn(
+            'tron_payout_destination_activation_total{result="terminal_error"} 1.0',
+            text,
+        )
+
     def test_completed_record_with_active_quote_returns_success_without_provider_call(self):
         redis_client = FakeRedis()
         redis_client.values[activation.activation_record_key(DESTINATION)] = json.dumps(
