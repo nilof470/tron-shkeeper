@@ -584,6 +584,65 @@ class PayoutResourcesTests(unittest.TestCase):
             ctx.exception.code, "PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE"
         )
 
+    def test_ensure_preserves_terminal_activation_retryability_on_resource_error(self):
+        from app import payout_resources
+        from app.payout_destination_activation import DestinationActivationError
+
+        quote = payout_resources.PayoutResourceQuote(
+            source_address=FEE_DEPOSIT,
+            destination=DESTINATION,
+            amount="1.25",
+            activation_required=True,
+            estimated_trx_burned="1.1",
+            energy=payout_resources.ResourceReadiness("profeex", 65000, 0, 65000),
+            bandwidth=payout_resources.ResourceReadiness("profeex", 346, 0, 346),
+            submit_ready=False,
+            blocking_code="DESTINATION_NOT_ACTIVATED",
+            blocking_reason="TRON payout destination is not activated",
+        )
+
+        def estimate(destination, amount, tron_client=None):
+            return quote
+
+        def activate(destination, *, quote_fn):
+            raise DestinationActivationError(
+                "ProfeeX activation unavailable",
+                code="PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE",
+                temporary=False,
+            )
+
+        original_estimate = (
+            payout_resources.estimate_fee_deposit_resources_for_usdt_payout
+        )
+        original_activation = payout_resources.ensure_destination_activated
+        original_flag = (
+            payout_resources.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION
+        )
+        payout_resources.estimate_fee_deposit_resources_for_usdt_payout = estimate
+        payout_resources.ensure_destination_activated = activate
+        payout_resources.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION = True
+        try:
+            with self.assertRaises(payout_resources.PayoutResourceError) as ctx:
+                payout_resources.ensure_fee_deposit_resources_for_usdt_payout(
+                    DESTINATION,
+                    Decimal("1.25"),
+                    tron_client=object(),
+                    allow_destination_activation=True,
+                )
+        finally:
+            payout_resources.estimate_fee_deposit_resources_for_usdt_payout = (
+                original_estimate
+            )
+            payout_resources.ensure_destination_activated = original_activation
+            payout_resources.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION = (
+                original_flag
+            )
+
+        self.assertEqual(
+            ctx.exception.code, "PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE"
+        )
+        self.assertFalse(ctx.exception.temporary)
+
 
 if __name__ == "__main__":
     unittest.main()

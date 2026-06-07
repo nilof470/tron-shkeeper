@@ -29,14 +29,15 @@ STATE_FAILED_PRE_BROADCAST = "FAILED_PRE_BROADCAST"
 STATE_FAILED_CHAIN_TERMINAL = "FAILED_CHAIN_TERMINAL"
 STATE_RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
 UNSAFE_RECOVERY_STATES = (STATE_SIGNING, STATE_SIGNED, STATE_BROADCASTING)
-RETRYABLE_PRE_BROADCAST_ERROR_CODES = {
+LEGACY_RETRYABLE_PRE_BROADCAST_ERROR_CODES = {
     "PAYOUT_RESOURCE_LOCK_UNAVAILABLE",
+}
+RETRYABLE_TEMPORARY_PRE_BROADCAST_ERROR_CODES = {
     "PAYOUT_DESTINATION_ACTIVATION_PENDING",
     "PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE",
     "PAYOUT_DESTINATION_ACTIVATION_DUPLICATE",
     "PAYOUT_DESTINATION_ACTIVATION_TIMEOUT",
     "PAYOUT_DESTINATION_ACTIVATION_QUOTE_UNAVAILABLE",
-    "PAYOUT_RESOURCE_PROVIDER_UNAVAILABLE",
 }
 NO_DOWNGRADE_STATES = (
     STATE_BROADCASTED,
@@ -53,6 +54,16 @@ class PayoutExecutionError(ValueError):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
+
+
+def _is_retryable_pre_broadcast_error(exc):
+    error_code = getattr(exc, "code", None)
+    if error_code in LEGACY_RETRYABLE_PRE_BROADCAST_ERROR_CODES:
+        return not hasattr(exc, "temporary") or getattr(exc, "temporary", False)
+    return (
+        error_code in RETRYABLE_TEMPORARY_PRE_BROADCAST_ERROR_CODES
+        and getattr(exc, "temporary", False)
+    )
 
 
 def compact_json(payload):
@@ -573,9 +584,8 @@ class PayoutExecutionStore:
         ):
             return cls._row_to_status(row)
         error_code = getattr(exc, "code", None)
-        if (
-            error_code in RETRYABLE_PRE_BROADCAST_ERROR_CODES
-            and not cls._has_unsafe_side_effect(row)
+        if _is_retryable_pre_broadcast_error(exc) and not cls._has_unsafe_side_effect(
+            row
         ):
             row = cls._transition(
                 row,

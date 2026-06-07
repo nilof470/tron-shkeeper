@@ -45,9 +45,16 @@ class PayoutResourceQuote:
 
 
 class PayoutResourceError(RuntimeError):
-    def __init__(self, message: str, *, code: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        temporary: bool = False,
+    ):
         super().__init__(message)
         self.code = code
+        self.temporary = temporary
 
 
 def get_available_bandwidth(account_resource: dict) -> int:
@@ -197,7 +204,9 @@ def ensure_fee_deposit_resources_for_usdt_payout(
                 ),
             )
         except DestinationActivationError as exc:
-            raise PayoutResourceError(str(exc), code=exc.code) from exc
+            raise PayoutResourceError(
+                str(exc), code=exc.code, temporary=exc.temporary
+            ) from exc
         quote = estimate_fee_deposit_resources_for_usdt_payout(
             destination,
             amount,

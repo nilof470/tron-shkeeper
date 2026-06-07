@@ -600,6 +600,102 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
         self.assertIsNone(row["signed_raw_tx_hash"])
         self.assertIsNone(row["broadcast_attempted_at"])
 
+    def test_terminal_activation_resource_error_with_retryable_code_fails_pre_broadcast(self):
+        from app import payout_resources
+        from app.payout_destination_activation import DestinationActivationError
+
+        self.submit()
+        original_flag = (
+            payout_resources.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION
+        )
+        payout_resources.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION = True
+        quote = payout_resources.PayoutResourceQuote(
+            source_address="fee-deposit",
+            destination=DESTINATION,
+            amount="25.000000",
+            activation_required=True,
+            estimated_trx_burned="1.1",
+            energy=payout_resources.ResourceReadiness("profeex", 65000, 0, 65000),
+            bandwidth=payout_resources.ResourceReadiness("profeex", 346, 0, 346),
+            submit_ready=False,
+            blocking_code="DESTINATION_NOT_ACTIVATED",
+            blocking_reason="TRON payout destination is not activated",
+        )
+
+        def estimate(destination, amount, tron_client=None):
+            return quote
+
+        def activate(destination, *, quote_fn):
+            raise DestinationActivationError(
+                "ProfeeX activation insufficient balance",
+                code="PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE",
+                temporary=False,
+            )
+
+        original_estimate = (
+            payout_resources.estimate_fee_deposit_resources_for_usdt_payout
+        )
+        original_activation = payout_resources.ensure_destination_activated
+        payout_resources.estimate_fee_deposit_resources_for_usdt_payout = estimate
+        payout_resources.ensure_destination_activated = activate
+        events = []
+        try:
+            status = self.store_module.PayoutExecutionStore.execute(
+                "1",
+                wallet=BoundaryWallet(events, self.row),
+                resource_ensurer=(
+                    payout_resources.ensure_fee_deposit_resources_for_usdt_payout
+                ),
+                lease_owner="worker-1",
+            )
+        finally:
+            payout_resources.config.TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION = (
+                original_flag
+            )
+            payout_resources.estimate_fee_deposit_resources_for_usdt_payout = (
+                original_estimate
+            )
+            payout_resources.ensure_destination_activated = original_activation
+
+        self.assertEqual(status["state"], "FAILED_PRE_BROADCAST")
+        self.assertEqual(status["failure_class"], "PREFLIGHT")
+        self.assertEqual(
+            status["error_code"], "PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE"
+        )
+        self.assertFalse(status["reconciliation_required"])
+        row = self.row()
+        self.assertIsNone(row["signed_raw_tx_hash"])
+        self.assertIsNone(row["broadcast_attempted_at"])
+
+    def test_provider_unavailable_resource_code_is_not_implicitly_retryable(self):
+        from app import payout_resources
+
+        self.submit()
+        events = []
+
+        def resource_ensurer(
+            destination, amount, tron_client=None, allow_destination_activation=False
+        ):
+            events.append((destination, amount, allow_destination_activation))
+            raise payout_resources.PayoutResourceError(
+                "Provider unavailable without precise retryable semantics",
+                code="PAYOUT_RESOURCE_PROVIDER_UNAVAILABLE",
+                temporary=True,
+            )
+
+        status = self.store_module.PayoutExecutionStore.execute(
+            "1",
+            wallet=BoundaryWallet(events, self.row),
+            resource_ensurer=resource_ensurer,
+            lease_owner="worker-1",
+        )
+
+        self.assertEqual(status["state"], "FAILED_PRE_BROADCAST")
+        self.assertEqual(status["failure_class"], "PREFLIGHT")
+        self.assertEqual(status["error_code"], "PAYOUT_RESOURCE_PROVIDER_UNAVAILABLE")
+        self.assertFalse(status["reconciliation_required"])
+        self.assertEqual(events[0][2], True)
+
     def test_terminal_activation_failure_stays_failed_pre_broadcast_without_reconciliation(self):
         self.submit()
         events = []
