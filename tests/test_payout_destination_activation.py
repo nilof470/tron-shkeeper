@@ -24,6 +24,12 @@ class FakeLock:
         self.events.append(("lock_release",))
 
 
+class RejectingLock(FakeLock):
+    def acquire(self, blocking=True):
+        self.events.append(("lock_acquire", blocking))
+        return False
+
+
 class FakeRedis:
     def __init__(self):
         self.values = {}
@@ -44,6 +50,12 @@ class FakeRedis:
     def delete(self, key):
         self.events.append(("delete", key))
         self.values.pop(key, None)
+
+
+class RejectingLockRedis(FakeRedis):
+    def lock(self, name, timeout, blocking_timeout, thread_local):
+        self.events.append(("lock", name, timeout, blocking_timeout, thread_local))
+        return RejectingLock(self.events)
 
 
 class FakeProvider:
@@ -144,7 +156,7 @@ class DestinationActivationTests(unittest.TestCase):
             text,
         )
 
-    def test_active_destination_skips_lock_and_provider(self):
+    def test_active_destination_skip_records_metric_without_lock_or_provider(self):
         redis_client = FakeRedis()
         provider = FakeProvider()
 
@@ -158,6 +170,32 @@ class DestinationActivationTests(unittest.TestCase):
         self.assertFalse(result.activated)
         self.assertEqual(provider.calls, [])
         self.assertFalse(any(event[0] == "lock" for event in redis_client.events))
+        text = prometheus_client.generate_latest().decode()
+        self.assertIn(
+            'tron_payout_destination_activation_total{result="success"} 1.0',
+            text,
+        )
+        self.assertIn(
+            "tron_payout_destination_activation_duration_seconds_count 1.0",
+            text,
+        )
+
+    def test_unacquired_lock_is_not_released(self):
+        redis_client = RejectingLockRedis()
+        provider = FakeProvider()
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True),
+                provider=provider,
+                redis_client=redis_client,
+            )
+
+        self.assertEqual(ctx.exception.code, "PAYOUT_DESTINATION_ACTIVATION_PENDING")
+        self.assertEqual(provider.calls, [])
+        self.assertTrue(any(event[0] == "lock_acquire" for event in redis_client.events))
+        self.assertFalse(any(event[0] == "lock_release" for event in redis_client.events))
 
     def test_existing_task_record_is_resumed(self):
         redis_client = FakeRedis()

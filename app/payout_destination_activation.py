@@ -93,14 +93,15 @@ def ensure_destination_activated(
     provider: ProfeeXProvider | None = None,
     redis_client=None,
 ) -> DestinationActivationResult:
-    quote = quote_fn(destination)
-    if _is_active_quote(quote):
-        return DestinationActivationResult(activated=False, status="ALREADY_ACTIVE")
-
     started_at = time.monotonic()
     metric_result = "success"
     lock = None
+    lock_acquired = False
     try:
+        quote = quote_fn(destination)
+        if _is_active_quote(quote):
+            return DestinationActivationResult(activated=False, status="ALREADY_ACTIVE")
+
         provider = provider or ProfeeXProvider()
         redis_client = redis_client or _redis_client()
         lock = redis_client.lock(
@@ -123,6 +124,7 @@ def ensure_destination_activated(
                 code="PAYOUT_DESTINATION_ACTIVATION_PENDING",
                 temporary=True,
             )
+        lock_acquired = True
 
         quote = quote_fn(destination)
         if _is_active_quote(quote):
@@ -194,7 +196,7 @@ def ensure_destination_activated(
         metric_result = "retryable_error" if exc.temporary else "terminal_error"
         raise
     finally:
-        if lock is not None:
+        if lock_acquired:
             try:
                 lock.release()
             except redis.exceptions.RedisError:
