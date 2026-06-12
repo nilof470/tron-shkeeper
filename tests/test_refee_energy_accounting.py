@@ -147,6 +147,7 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
         original_get_energy_delegator = tasks.get_energy_delegator
         original_get_energy_provider = tasks.get_energy_provider
         original_get_bandwidth_provider = tasks.get_bandwidth_provider
+        original_is_sweep_allowed = tasks.is_sweep_allowed
 
         tasks.config = config or FakeConfig()
         tasks.ConnectionManager = SimpleNamespace(client=lambda: client)
@@ -164,6 +165,7 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
         tasks.get_energy_delegator = lambda: (object(), "TDELEGATOR")
         tasks.get_energy_provider = lambda tron_client=None: provider
         tasks.get_bandwidth_provider = lambda tron_client=None: None
+        tasks.is_sweep_allowed = lambda *_args, **_kwargs: True
 
         def restore():
             tasks.config = original_config
@@ -172,6 +174,7 @@ class RefeeEnergyAccountingTests(unittest.TestCase):
             tasks.get_energy_delegator = original_get_energy_delegator
             tasks.get_energy_provider = original_get_energy_provider
             tasks.get_bandwidth_provider = original_get_bandwidth_provider
+            tasks.is_sweep_allowed = original_is_sweep_allowed
 
         return restore
 

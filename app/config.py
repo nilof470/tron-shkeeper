@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     AML_RESULT_UPDATE_PERIOD: int = 120
     AML_SWEEP_ACCOUNTS_PERIOD: int = 3600
     AML_WAIT_BEFORE_API_CALL: int = 320
+    AML_SWEEP_GATE_ENABLED: bool = True
+    AML_SWEEP_GATE_TIMEOUT_SEC: float = Field(2.0, ge=0.1)
     # Resource delegation
     ENERGY_DELEGATION_MODE: bool = False
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH: bool = False

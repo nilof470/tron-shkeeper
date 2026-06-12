@@ -23,6 +23,7 @@ from .exceptions import (
     BadContractResult,
 )
 from .connection_manager import ConnectionManager
+from .sweep_guard import is_sweep_allowed, is_sweep_gate_active
 
 
 class BlockScanner:
@@ -185,7 +186,7 @@ class BlockScanner:
         from .custom.aml.functions import (
             add_transaction_to_db,
         )
-        from .custom.aml.tasks import run_payout_for_tx
+        from .custom.aml.tasks import queue_guarded_payout_if_allowed, run_payout_for_tx
 
         try:
             block = self.download_block(block_num)
@@ -237,6 +238,48 @@ class BlockScanner:
                             continue
                         logger.info(f"Sending notification for TX {tron_tx=}")
                         self.notify_shkeeper(tron_tx.symbol.value, tron_tx.txid)
+                        if is_sweep_gate_active(tron_tx.symbol):
+                            if (
+                                self.main_account
+                                not in (tron_tx.src_addr, tron_tx.dst_addr)
+                                and tron_tx.dst_addr in valid_addresses
+                                and tron_tx.src_addr not in valid_addresses
+                            ):
+                                add_transaction_to_db(
+                                    tron_tx.txid,
+                                    tron_tx.dst_addr,
+                                    tron_tx.amount,
+                                    tron_tx.symbol,
+                                    enqueue_check=False,
+                                )
+                                if queue_guarded_payout_if_allowed(
+                                    tron_tx.symbol,
+                                    tron_tx.dst_addr,
+                                    txid=tron_tx.txid,
+                                ):
+                                    logger.info(
+                                        f"Queued guarded {tron_tx.symbol} sweep "
+                                        f"for {tron_tx.dst_addr}"
+                                    )
+                                else:
+                                    logger.info(
+                                        "SHKeeper sweep eligibility did not allow "
+                                        f"{tron_tx.symbol} sweep for "
+                                        f"{tron_tx.dst_addr}; leaving balance."
+                                    )
+                            elif (
+                                tron_tx.dst_addr in valid_addresses
+                                and tron_tx.src_addr == self.main_account
+                            ):
+                                add_transaction_to_db(
+                                    tron_tx.txid,
+                                    tron_tx.dst_addr,
+                                    tron_tx.amount,
+                                    tron_tx.symbol,
+                                    "from_fee",
+                                )
+                                logger.info(f"Ignoring fee-deposit transfer: {tron_tx}")
+                            continue
                         if (
                             self.main_account
                             not in (tron_tx.src_addr, tron_tx.dst_addr)
@@ -290,15 +333,29 @@ class BlockScanner:
                             if tron_tx.status == "SUCCESS":
                                 logger.info(f"Sending notification for {tron_tx}")
                                 self.notify_shkeeper(tron_tx.symbol.value, tron_tx.txid)
-                                # Send funds to main account
                                 if tron_tx.is_trc20:
+                                    if not is_sweep_allowed(
+                                        tron_tx.symbol,
+                                        tron_tx.dst_addr,
+                                        txid=tron_tx.txid,
+                                    ):
+                                        logger.info(
+                                            "SHKeeper sweep eligibility did not "
+                                            f"allow {tron_tx.symbol} sweep for "
+                                            f"{tron_tx.dst_addr}; leaving balance."
+                                        )
+                                        continue
                                     if config.DEVMODE_CELERY_NODELAY:
                                         transfer_trc20_from(
-                                            tron_tx.dst_addr, tron_tx.symbol
+                                            tron_tx.dst_addr,
+                                            tron_tx.symbol,
+                                            txid=tron_tx.txid,
                                         )
                                     else:
                                         transfer_trc20_from.delay(
-                                            tron_tx.dst_addr, tron_tx.symbol
+                                            tron_tx.dst_addr,
+                                            tron_tx.symbol,
+                                            txid=tron_tx.txid,
                                         )
                                 else:
                                     if _should_sweep_trx_balance(tron_tx.amount):

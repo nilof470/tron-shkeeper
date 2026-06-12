@@ -49,6 +49,7 @@ from .payout_resources import ensure_fee_deposit_resources_for_usdt_payout
 from .resource_providers import get_bandwidth_provider, get_energy_provider
 from .logging import logger
 from .wallet_encryption import wallet_encryption
+from .sweep_guard import is_sweep_allowed
 
 
 @contextmanager
@@ -287,10 +288,17 @@ def ensure_onetime_bandwidth(onetime_publ_key: str, tron_client) -> bool:
 
 
 @celery.task()
-def transfer_trc20_from(onetime_acc, symbol):
+def transfer_trc20_from(onetime_acc, symbol, txid=None):
     """
     Transfers TRC20 from onetime to main account
     """
+
+    if not is_sweep_allowed(symbol, onetime_acc, txid=txid):
+        logger.info(
+            "SHKeeper sweep eligibility did not allow guarded sweep before "
+            f"touching chain state: symbol={symbol} account={onetime_acc} txid={txid}"
+        )
+        return False
 
     tron_client = ConnectionManager.client()
 
@@ -930,6 +938,12 @@ def scan_accounts(self, *args, **kwargs):
                 "app.tasks.transfer_trc20_from",
                 args=[account, symbol],
             ):
+                if not is_sweep_allowed(symbol, account):
+                    logger.info(
+                        "SHKeeper sweep eligibility did not allow periodic "
+                        f"{symbol} sweep for {account}; leaving balance."
+                    )
+                    continue
                 transfer_trc20_from(account, symbol)
 
         # Sort trx balances by balance in descending order

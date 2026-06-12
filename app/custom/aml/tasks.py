@@ -10,12 +10,17 @@ from app.logging import logger
 from .models import Transaction
 from app.schemas import TronAddress, TronSymbol
 from app.utils import skip_if_running
+from app.sweep_guard import is_sweep_allowed, is_sweep_gate_active
 from app.wallet import Wallet
 
 
 @celery.task(bind=True)
 @skip_if_running
 def run_payout_for_tx(self, symbol, account, tx_id):
+    if is_sweep_gate_active(symbol):
+        from app.tasks import transfer_trc20_from
+
+        return transfer_trc20_from(account, symbol, txid=tx_id)
     wallet = AmlWallet(symbol=symbol)
     if account == wallet.main_account["public"]:
         logger.debug(f"{account} is fee-dopisit, skipping ")
@@ -24,13 +29,44 @@ def run_payout_for_tx(self, symbol, account, tx_id):
     return results
 
 
+def _mark_transaction_status(txid, status):
+    with Session(engine) as session:
+        tx = session.exec(select(Transaction).where(Transaction.tx_id == txid)).first()
+        if not tx:
+            return False
+        tx.status = status
+        session.add(tx)
+        session.commit()
+        session.refresh(tx)
+        return True
+
+
+def queue_guarded_payout_if_allowed(symbol, account, txid):
+    if is_sweep_allowed(symbol, account, txid=txid):
+        if not _mark_transaction_status(txid, "ready"):
+            logger.warning(
+                f"Cannot mark guarded {symbol} transaction {short_txid(txid)} "
+                f"ready for {account}; refusing to enqueue sweep."
+            )
+            return False
+        run_payout_for_tx.delay(symbol, account, txid)
+        return True
+    logger.info(
+        f"SHKeeper sweep eligibility did not allow guarded {symbol} "
+        f"sweep for {account}; skipping legacy AMLBot check."
+    )
+    return False
+
+
 @celery.task(bind=True)
 @skip_if_running
 def check_transaction(self, symbol: TronSymbol, account: TronAddress, txid: str):
+    if is_sweep_gate_active(symbol):
+        return queue_guarded_payout_if_allowed(symbol, account, txid)
+
     from .functions import (
         aml_check_transaction,
     )
-
     result = aml_check_transaction(account, txid)
     if (
         result["result"]
@@ -76,6 +112,16 @@ def check_transaction(self, symbol: TronSymbol, account: TronAddress, txid: str)
 @celery.task(bind=True)
 @skip_if_running
 def recheck_transaction(self, uid, txid):
+    with Session(engine) as session:
+        guarded_tx = session.exec(
+            select(Transaction).where(Transaction.tx_id == txid)
+        ).first()
+    if guarded_tx and is_sweep_gate_active(guarded_tx.crypto):
+        return queue_guarded_payout_if_allowed(guarded_tx.crypto, guarded_tx.address, txid)
+    if not guarded_tx:
+        logger.warning(f"Cannot find tx {short_txid(txid)} in DB")
+        return False
+
     from .functions import (
         aml_recheck_transaction,
     )
@@ -104,9 +150,6 @@ def recheck_transaction(self, uid, txid):
 
     with Session(engine) as session:
         pd = session.exec(select(Transaction).where(Transaction.tx_id == txid)).first()
-        if not pd:
-            logger.warning(f"Cannot find tx {short_txid(txid)} in DB")
-            return False
         pd.uid = uid
         pd.score = score
         pd.status = status
@@ -168,7 +211,33 @@ def sweep_accounts(self):
                             Transaction.crypto == symbol,
                         )
                     ).all()
+                    guarded_sweep = is_sweep_gate_active(symbol)
                     for tx in txs:
+                        if guarded_sweep and tx.ttype != "aml":
+                            logger.debug(
+                                f"Skipping guarded {symbol} non-deposit AML row "
+                                f"{tx.tx_id} with type {tx.ttype}"
+                            )
+                            continue
+                        if guarded_sweep and not is_sweep_allowed(
+                            symbol,
+                            account,
+                            txid=tx.tx_id,
+                        ):
+                            logger.info(
+                                "SHKeeper sweep eligibility did not allow guarded "
+                                f"{symbol} sweep for {account}; leaving balance."
+                            )
+                            continue
+                        if guarded_sweep and not _mark_transaction_status(
+                            tx.tx_id,
+                            "ready",
+                        ):
+                            logger.warning(
+                                f"Cannot mark guarded {symbol} transaction "
+                                f"{short_txid(tx.tx_id)} ready; leaving balance."
+                            )
+                            continue
                         run_payout_for_tx.delay(symbol, account, tx.tx_id)
 
             #

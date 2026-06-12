@@ -206,6 +206,18 @@ class SuccessfulSweepTronClient(FakeTronClient):
 
 
 class RefeeBandwidthGuardTests(unittest.TestCase):
+    def setUp(self):
+        from app import tasks
+
+        self._tasks = tasks
+        self._original_is_sweep_allowed = tasks.is_sweep_allowed
+        tasks.is_sweep_allowed = lambda *_args, **_kwargs: True
+
+    def tearDown(self):
+        self._tasks.is_sweep_allowed = self._original_is_sweep_allowed
+        self._tasks = None
+        self._original_is_sweep_allowed = None
+
     def test_refee_sweep_rents_bandwidth_before_acquiring_energy(self):
         from app import tasks
         from app.schemas import KeyType

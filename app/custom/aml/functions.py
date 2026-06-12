@@ -20,7 +20,9 @@ from ...utils import short_txid
 from .models import Transaction, Payout
 
 
-def add_transaction_to_db(hash, account, amount, symbol, internal_type=False):
+def add_transaction_to_db(
+    hash, account, amount, symbol, internal_type=False, enqueue_check=True
+):
     logger.info("Adding tx to DB")
     drain_type = get_external_drain_type(symbol)
     status = ""
@@ -33,7 +35,8 @@ def add_transaction_to_db(hash, account, amount, symbol, internal_type=False):
         raise Exception(f"Can't get payout type for tx {hash}")
     elif drain_type == "aml":
         if amount > get_min_check_amount(symbol):
-            check_transaction.delay(symbol, account, hash)
+            if enqueue_check:
+                check_transaction.delay(symbol, account, hash)
             ttype = "aml"
             status = "pending"
             score = -1
