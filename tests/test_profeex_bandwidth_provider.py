@@ -45,6 +45,27 @@ class SequencedEnergyTronClient:
         return self.resources[0]
 
 
+class FailingResourceTronClient:
+    def get_account_resource(self, address):
+        raise RuntimeError(f"resource unavailable for {address}")
+
+
+class SequencedResourceOrExceptionTronClient:
+    def __init__(self, resources):
+        self.resources = list(resources)
+        self.resource_calls = []
+
+    def get_account_resource(self, address):
+        self.resource_calls.append(address)
+        if len(self.resources) > 1:
+            resource = self.resources.pop(0)
+        else:
+            resource = self.resources[0]
+        if isinstance(resource, BaseException):
+            raise resource
+        return resource
+
+
 class MockJsonResponse:
     def __init__(self, status_code, data):
         self.status_code = status_code
@@ -64,6 +85,110 @@ class ProfeeXBandwidthProviderTests(unittest.TestCase):
             module.config = original_config
 
         return restore
+
+    def test_profeex_network_timeout_is_fallback_eligible(self):
+        from app.resource_providers.profeex import classify_profeex_failure
+
+        failure = classify_profeex_failure("REQUEST_TIMEOUT")
+
+        self.assertEqual(failure.code, "REQUEST_TIMEOUT")
+        self.assertTrue(failure.temporary)
+        self.assertTrue(failure.fallback_eligible)
+        self.assertFalse(failure.order_accepted)
+
+    def test_profeex_insufficient_balance_is_fallback_eligible(self):
+        from app.resource_providers.profeex import classify_profeex_failure
+
+        failure = classify_profeex_failure("INSUFFICIENT_BALANCE")
+
+        self.assertEqual(failure.code, "INSUFFICIENT_BALANCE")
+        self.assertTrue(failure.temporary)
+        self.assertTrue(failure.fallback_eligible)
+
+    def test_profeex_invalid_address_is_not_fallback_eligible(self):
+        from app.resource_providers.profeex import classify_profeex_failure
+
+        failure = classify_profeex_failure("INVALID_ADDRESS")
+
+        self.assertEqual(failure.code, "INVALID_ADDRESS")
+        self.assertFalse(failure.temporary)
+        self.assertFalse(failure.fallback_eligible)
+
+    def test_profeex_malformed_pre_accept_response_is_fallback_eligible(self):
+        from app.resource_providers.profeex import classify_profeex_failure
+
+        failure = classify_profeex_failure("MALFORMED_PRE_ACCEPT_RESPONSE")
+
+        self.assertEqual(failure.code, "MALFORMED_PRE_ACCEPT_RESPONSE")
+        self.assertTrue(failure.temporary)
+        self.assertTrue(failure.fallback_eligible)
+
+    def test_profeex_accepted_response_without_task_id_is_not_fallback_eligible(self):
+        from app.resource_providers.profeex import classify_profeex_failure
+
+        failure = classify_profeex_failure(
+            "ACCEPTED_ORDER_WITHOUT_TASK_ID",
+            order_accepted=True,
+        )
+
+        self.assertEqual(failure.code, "ACCEPTED_ORDER_WITHOUT_TASK_ID")
+        self.assertTrue(failure.temporary)
+        self.assertTrue(failure.order_accepted)
+        self.assertFalse(failure.fallback_eligible)
+
+    def test_profeex_accepted_order_is_polled_before_refee_fallback(self):
+        from app.resource_providers.profeex import classify_profeex_failure
+
+        failure = classify_profeex_failure(
+            "POLL_TEMPORARY_ERROR",
+            task_id="task-1",
+            order_accepted=True,
+        )
+
+        self.assertEqual(failure.task_id, "task-1")
+        self.assertTrue(failure.temporary)
+        self.assertTrue(failure.order_accepted)
+        self.assertFalse(failure.fallback_eligible)
+
+    def test_profeex_accepted_order_timeout_is_not_fallback_eligible(self):
+        from app.resource_providers.profeex import classify_profeex_failure
+
+        failure = classify_profeex_failure(
+            "ORDER_TIMEOUT",
+            task_id="task-1",
+            order_accepted=True,
+        )
+
+        self.assertEqual(failure.task_id, "task-1")
+        self.assertTrue(failure.temporary)
+        self.assertTrue(failure.order_accepted)
+        self.assertFalse(failure.fallback_eligible)
+
+    def test_bandwidth_order_timeout_sets_fallback_eligible_last_failure(self):
+        from app.resource_providers import profeex
+        from app.resource_providers.profeex import ProfeeXBandwidthProvider
+
+        client = SequencedBandwidthTronClient(
+            [{"freeNetLimit": 0, "freeNetUsed": 0, "NetLimit": 0, "NetUsed": 0}]
+        )
+        provider = ProfeeXBandwidthProvider(tron_client=client)
+
+        original_post = profeex.requests.post
+        restore_config = self.patch_config(profeex)
+        try:
+            profeex.requests.post = lambda *args, **kwargs: (_ for _ in ()).throw(
+                profeex.requests.Timeout("timeout")
+            )
+
+            self.assertFalse(provider.acquire_bandwidth("TADDR", 350))
+        finally:
+            profeex.requests.post = original_post
+            restore_config()
+
+        self.assertEqual(provider.last_failure.code, "REQUEST_TIMEOUT")
+        self.assertTrue(provider.last_failure.temporary)
+        self.assertTrue(provider.last_failure.fallback_eligible)
+        self.assertFalse(provider.last_failure.order_accepted)
 
     def test_rents_fixed_energy_with_query_params_and_api_key(self):
         from app.resource_providers import profeex
@@ -310,6 +435,74 @@ class ProfeeXBandwidthProviderTests(unittest.TestCase):
             profeex.requests.post = original_post
             restore_config()
 
+    def test_energy_pre_order_resource_read_failure_sets_non_fallback_last_failure(self):
+        from app.resource_providers import profeex
+        from app.resource_providers.profeex import ProfeeXProvider
+
+        provider = ProfeeXProvider(tron_client=FailingResourceTronClient())
+        original_post = profeex.requests.post
+        restore_config = self.patch_config(profeex)
+        try:
+            profeex.requests.post = lambda *args, **kwargs: self.fail(
+                "post not expected"
+            )
+            self.assertFalse(
+                provider.acquire_energy(
+                    "TADDR",
+                    7_821,
+                    {"EnergyLimit": 0, "EnergyUsed": 0},
+                    minimum_energy_required=72_321,
+                )
+            )
+        finally:
+            profeex.requests.post = original_post
+            restore_config()
+
+        self.assertIsNotNone(provider.last_failure)
+        self.assertEqual(provider.last_failure.code, "RESOURCE_READ_FAILED")
+        self.assertTrue(provider.last_failure.temporary)
+        self.assertFalse(provider.last_failure.fallback_eligible)
+        self.assertFalse(provider.last_failure.order_accepted)
+        self.assertIsNone(provider.last_failure.task_id)
+
+    def test_energy_post_active_resource_read_failure_stays_non_fallback(self):
+        from app.resource_providers import profeex
+        from app.resource_providers.profeex import ProfeeXProvider
+
+        client = SequencedResourceOrExceptionTronClient(
+            [
+                {"EnergyLimit": 0, "EnergyUsed": 0},
+                RuntimeError("post-active resource unavailable"),
+                RuntimeError("post-active resource unavailable"),
+                RuntimeError("post-active resource unavailable"),
+            ]
+        )
+        provider = ProfeeXProvider(tron_client=client)
+
+        original_post = profeex.requests.post
+        restore_config = self.patch_config(profeex)
+        try:
+            profeex.requests.post = lambda *args, **kwargs: MockJsonResponse(
+                202, {"task_id": "task-1", "status": "ACTIVE"}
+            )
+            self.assertFalse(
+                provider.acquire_energy(
+                    "TADDR",
+                    7_321,
+                    {"EnergyLimit": 0, "EnergyUsed": 0},
+                    minimum_energy_required=72_321,
+                )
+            )
+        finally:
+            profeex.requests.post = original_post
+            restore_config()
+
+        self.assertEqual(provider.last_failure.code, "RESOURCE_READ_FAILED")
+        self.assertTrue(provider.last_failure.temporary)
+        self.assertFalse(provider.last_failure.fallback_eligible)
+        self.assertTrue(provider.last_failure.order_accepted)
+        self.assertEqual(provider.last_failure.task_id, "task-1")
+
     def test_energy_recheck_waits_after_active_until_resource_visible(self):
         from app.resource_providers import profeex
         from app.resource_providers.profeex import ProfeeXProvider
@@ -546,6 +739,37 @@ class ProfeeXBandwidthProviderTests(unittest.TestCase):
             restore_config()
 
         self.assertEqual(client.resource_calls, ["TADDR", "TADDR", "TADDR"])
+
+    def test_bandwidth_post_active_resource_read_failure_stays_non_fallback(self):
+        from app.resource_providers import profeex
+        from app.resource_providers.profeex import ProfeeXBandwidthProvider
+
+        client = SequencedResourceOrExceptionTronClient(
+            [
+                {"freeNetLimit": 600, "freeNetUsed": 600, "NetLimit": 0, "NetUsed": 0},
+                RuntimeError("post-active resource unavailable"),
+                RuntimeError("post-active resource unavailable"),
+                RuntimeError("post-active resource unavailable"),
+            ]
+        )
+        provider = ProfeeXBandwidthProvider(tron_client=client)
+
+        original_post = profeex.requests.post
+        restore_config = self.patch_config(profeex)
+        try:
+            profeex.requests.post = lambda *args, **kwargs: MockJsonResponse(
+                202, {"task_id": "task-1", "status": "ACTIVE"}
+            )
+            self.assertFalse(provider.acquire_bandwidth("TADDR", 350))
+        finally:
+            profeex.requests.post = original_post
+            restore_config()
+
+        self.assertEqual(provider.last_failure.code, "RESOURCE_READ_FAILED")
+        self.assertTrue(provider.last_failure.temporary)
+        self.assertFalse(provider.last_failure.fallback_eligible)
+        self.assertTrue(provider.last_failure.order_accepted)
+        self.assertEqual(provider.last_failure.task_id, "task-1")
 
     def test_minimal_create_response_polls_status_before_rechecking_bandwidth(self):
         from app.resource_providers import profeex

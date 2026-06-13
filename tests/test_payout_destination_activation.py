@@ -6,7 +6,8 @@ import unittest
 import prometheus_client
 
 from app import payout_destination_activation as activation
-from app.resource_providers.profeex import ProfeeXOrderError
+from app.resource_providers.profeex import ProviderFailure, ProfeeXOrderError
+from app.resource_providers.refee import RefeeProvider, RefeeProviderError
 
 
 DESTINATION = "TTMqzSAwwcM1UqMy7Up2eQuNXZ6uUZ9AN5"
@@ -135,12 +136,88 @@ class MalformedOrderProvider(FakeProvider):
         return {"target": destination, "status": "QUEUED"}
 
 
+class ActivationFailingProvider(FakeProvider):
+    def __init__(self, temporary=True):
+        super().__init__()
+        self.temporary = temporary
+
+    def activate_address(self, destination):
+        self.calls.append(("activate", destination))
+        raise ProfeeXOrderError(
+            "activation",
+            "provider unavailable",
+            "SERVICE_UNAVAILABLE",
+            temporary=self.temporary,
+        )
+
+
+class AcceptedWithoutTaskProvider(FakeProvider):
+    def activate_address(self, destination):
+        self.calls.append(("activate", destination))
+        raise ProfeeXOrderError(
+            "activation",
+            "accepted activation response had no task_id",
+            "ACCEPTED_ORDER_WITHOUT_TASK_ID",
+            temporary=True,
+            provider_failure=ProviderFailure(
+                code="ACCEPTED_ORDER_WITHOUT_TASK_ID",
+                temporary=True,
+                fallback_eligible=False,
+                order_accepted=True,
+            ),
+        )
+
+
+class DestinationActivationFailingProvider(FakeProvider):
+    def __init__(self, temporary=True):
+        super().__init__()
+        self.temporary = temporary
+
+    def activate_address(self, destination):
+        self.calls.append(("activate", destination))
+        raise activation.DestinationActivationError(
+            "activation unavailable",
+            code="PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE",
+            temporary=self.temporary,
+        )
+
+
+class FakeRefeeActivationProvider:
+    def __init__(self, result=None, error=None):
+        self.result = result or {"txn_hash": "tx-refee-1"}
+        self.error = error
+        self.calls = []
+
+    def activate_address(self, destination):
+        self.calls.append(("activate", destination))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+class FakeResponse:
+    def __init__(self, status_code, payload=None, text="response"):
+        self.status_code = status_code
+        self.payload = payload
+        self.text = text
+
+    def json(self):
+        if isinstance(self.payload, BaseException):
+            raise self.payload
+        return self.payload
+
+
 class DestinationActivationTests(unittest.TestCase):
     def setUp(self):
         self.original_config = activation.config
         activation.config = SimpleNamespace(
             REDIS_HOST="localhost",
             PROFEEX=SimpleNamespace(timeout_sec=1, poll_interval_sec=0.01),
+            REFEE=SimpleNamespace(
+                api_base_url="https://refee.test",
+                api_key=SimpleNamespace(get_secret_value=lambda: "refee-key"),
+            ),
+            TRON_USDT_RESOURCE_FALLBACK_PROVIDER=None,
             TRON_USDT_DESTINATION_ACTIVATION_LOCK_TTL_SEC=300,
             TRON_USDT_DESTINATION_ACTIVATION_LOCK_WAIT_SEC=60,
             TRON_USDT_DESTINATION_ACTIVATION_RECORD_TTL_SEC=86400,
@@ -532,6 +609,29 @@ class DestinationActivationTests(unittest.TestCase):
         self.assertEqual(result.status, "ALREADY_ACTIVE")
         self.assertEqual(provider.calls, [("activate", DESTINATION)])
 
+    def test_duplicate_activation_does_not_fall_back_when_destination_still_new(self):
+        redis_client = FakeRedis()
+        profeex_provider = DuplicateProvider()
+        refee_provider = FakeRefeeActivationProvider({"txn_hash": "tx-refee-blocked"})
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True, True),
+                activation_providers=[
+                    ("profeex", profeex_provider),
+                    ("refee", refee_provider),
+                ],
+                redis_client=redis_client,
+            )
+
+        self.assertEqual(
+            ctx.exception.code, "PAYOUT_DESTINATION_ACTIVATION_DUPLICATE"
+        )
+        self.assertTrue(ctx.exception.temporary)
+        self.assertEqual(profeex_provider.calls, [("activate", DESTINATION)])
+        self.assertEqual(refee_provider.calls, [])
+
     def test_retryable_provider_failure_records_metric(self):
         redis_client = FakeRedis()
         provider = FailingProvider()
@@ -552,4 +652,299 @@ class DestinationActivationTests(unittest.TestCase):
         self.assertIn(
             'tron_payout_destination_activation_total{result="retryable_error"} 1.0',
             text,
+        )
+
+    def test_temporary_wait_error_after_task_id_does_not_fall_back_to_refee(self):
+        redis_client = FakeRedis()
+        profeex_provider = FailingProvider()
+        refee_provider = FakeRefeeActivationProvider({"txn_hash": "tx-refee-live"})
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True),
+                activation_providers=[
+                    ("profeex", profeex_provider),
+                    ("refee", refee_provider),
+                ],
+                redis_client=redis_client,
+            )
+
+        self.assertTrue(ctx.exception.temporary)
+        self.assertEqual(
+            ctx.exception.code, "PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE"
+        )
+        self.assertEqual(
+            profeex_provider.calls,
+            [("activate", DESTINATION), ("wait", "task-1", "QUEUED")],
+        )
+        self.assertEqual(refee_provider.calls, [])
+
+    def test_pending_record_wait_error_does_not_fall_back_to_refee(self):
+        redis_client = FakeRedis()
+        redis_client.values[activation.activation_record_key(DESTINATION)] = json.dumps(
+            {
+                "destination": DESTINATION,
+                "task_id": "task-existing",
+                "status": "PROCESSING",
+            }
+        ).encode("utf-8")
+        profeex_provider = FailingProvider()
+        refee_provider = FakeRefeeActivationProvider({"txn_hash": "tx-refee-resume"})
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True),
+                activation_providers=[
+                    ("profeex", profeex_provider),
+                    ("refee", refee_provider),
+                ],
+                redis_client=redis_client,
+            )
+
+        self.assertTrue(ctx.exception.temporary)
+        self.assertEqual(
+            ctx.exception.code, "PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE"
+        )
+        self.assertEqual(
+            profeex_provider.calls, [("wait", "task-existing", "PROCESSING")]
+        )
+        self.assertEqual(refee_provider.calls, [])
+
+    def test_default_provider_chain_uses_refee_fallback_config(self):
+        redis_client = FakeRedis()
+        profeex_provider = ActivationFailingProvider(temporary=True)
+        refee_provider = FakeRefeeActivationProvider({"txn_hash": "tx-refee-config"})
+        original_profeex_provider = activation.ProfeeXProvider
+        original_refee_provider = activation.RefeeProvider
+        activation.config.TRON_USDT_RESOURCE_FALLBACK_PROVIDER = "refee"
+        activation.ProfeeXProvider = lambda: profeex_provider
+        activation.RefeeProvider = lambda: refee_provider
+        try:
+            result = activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True),
+                redis_client=redis_client,
+            )
+        finally:
+            activation.ProfeeXProvider = original_profeex_provider
+            activation.RefeeProvider = original_refee_provider
+
+        self.assertTrue(result.activated)
+        self.assertEqual(result.provider, "refee")
+        self.assertEqual(result.txn_hash, "tx-refee-config")
+        self.assertEqual(profeex_provider.calls, [("activate", DESTINATION)])
+        self.assertEqual(refee_provider.calls, [("activate", DESTINATION)])
+
+    def test_refee_activate_address_posts_destination_and_returns_txn_hash(self):
+        import app.resource_providers.refee as refee_module
+
+        original_config = refee_module.config
+        original_post = refee_module.requests.post
+        calls = []
+
+        def fake_post(url, params=None, headers=None, timeout=None):
+            calls.append((url, params, headers, timeout))
+            return FakeResponse(200, {"txn_hash": "tx-123", "status": "sent"})
+
+        refee_module.config = activation.config
+        refee_module.requests.post = fake_post
+        try:
+            result = RefeeProvider().activate_address(DESTINATION)
+        finally:
+            refee_module.config = original_config
+            refee_module.requests.post = original_post
+
+        self.assertEqual(result["txn_hash"], "tx-123")
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "https://refee.test/api/functions/activate",
+                    {"address": DESTINATION},
+                    {"X-API-Key": "refee-key"},
+                    RefeeProvider.REQUEST_TIMEOUT_SEC,
+                )
+            ],
+        )
+
+    def test_refee_activate_address_400_returns_already_active(self):
+        import app.resource_providers.refee as refee_module
+
+        original_config = refee_module.config
+        original_post = refee_module.requests.post
+        refee_module.config = activation.config
+        refee_module.requests.post = lambda *args, **kwargs: FakeResponse(400)
+        try:
+            result = RefeeProvider().activate_address(DESTINATION)
+        finally:
+            refee_module.config = original_config
+            refee_module.requests.post = original_post
+
+        self.assertEqual(
+            result, {"status": "already_active", "address": DESTINATION}
+        )
+
+    def test_refee_activate_address_402_is_temporary_insufficient_balance(self):
+        import app.resource_providers.refee as refee_module
+
+        original_config = refee_module.config
+        original_post = refee_module.requests.post
+        refee_module.config = activation.config
+        refee_module.requests.post = lambda *args, **kwargs: FakeResponse(402)
+        try:
+            with self.assertRaises(RefeeProviderError) as ctx:
+                RefeeProvider().activate_address(DESTINATION)
+        finally:
+            refee_module.config = original_config
+            refee_module.requests.post = original_post
+
+        self.assertEqual(ctx.exception.error_code, "INSUFFICIENT_BALANCE")
+        self.assertTrue(ctx.exception.temporary)
+
+    def test_refee_activate_address_401_is_terminal_configuration_error(self):
+        import app.resource_providers.refee as refee_module
+
+        original_config = refee_module.config
+        original_post = refee_module.requests.post
+        refee_module.config = activation.config
+        refee_module.requests.post = lambda *args, **kwargs: FakeResponse(401)
+        try:
+            with self.assertRaises(RefeeProviderError) as ctx:
+                RefeeProvider().activate_address(DESTINATION)
+        finally:
+            refee_module.config = original_config
+            refee_module.requests.post = original_post
+
+        self.assertEqual(ctx.exception.error_code, "CONFIGURATION_ERROR")
+        self.assertFalse(ctx.exception.temporary)
+
+    def test_temporary_profeex_activation_error_falls_back_to_refee(self):
+        redis_client = FakeRedis()
+        profeex_provider = ActivationFailingProvider(temporary=True)
+        refee_provider = FakeRefeeActivationProvider({"txn_hash": "tx-refee-1"})
+
+        result = activation.ensure_destination_activated(
+            DESTINATION,
+            quote_fn=self.quote_sequence(True, True),
+            activation_providers=[
+                ("profeex", profeex_provider),
+                ("refee", refee_provider),
+            ],
+            redis_client=redis_client,
+        )
+
+        self.assertTrue(result.activated)
+        self.assertEqual(result.status, "COMPLETED")
+        self.assertEqual(result.provider, "refee")
+        self.assertEqual(result.txn_hash, "tx-refee-1")
+        self.assertEqual(profeex_provider.calls, [("activate", DESTINATION)])
+        self.assertEqual(refee_provider.calls, [("activate", DESTINATION)])
+        self.assertTrue(
+            any(
+                event[0] == "setex"
+                and event[3]["provider"] == "refee"
+                and event[3]["txn_hash"] == "tx-refee-1"
+                and event[3]["status"] == "COMPLETED"
+                for event in redis_client.events
+            )
+        )
+
+    def test_accepted_profeex_activation_without_task_id_does_not_fall_back_to_refee(self):
+        redis_client = FakeRedis()
+        profeex_provider = AcceptedWithoutTaskProvider()
+        refee_provider = FakeRefeeActivationProvider({"txn_hash": "tx-refee-blocked"})
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True),
+                activation_providers=[
+                    ("profeex", profeex_provider),
+                    ("refee", refee_provider),
+                ],
+                redis_client=redis_client,
+            )
+
+        self.assertEqual(ctx.exception.code, "ACCEPTED_ORDER_WITHOUT_TASK_ID")
+        self.assertTrue(ctx.exception.temporary)
+        self.assertEqual(profeex_provider.calls, [("activate", DESTINATION)])
+        self.assertEqual(refee_provider.calls, [])
+
+    def test_temporary_destination_activation_error_falls_back_to_refee(self):
+        redis_client = FakeRedis()
+        profeex_provider = DestinationActivationFailingProvider(temporary=True)
+        refee_provider = FakeRefeeActivationProvider({"txn_hash": "tx-refee-2"})
+
+        result = activation.ensure_destination_activated(
+            DESTINATION,
+            quote_fn=self.quote_sequence(True, True),
+            activation_providers=[
+                ("profeex", profeex_provider),
+                ("refee", refee_provider),
+            ],
+            redis_client=redis_client,
+        )
+
+        self.assertTrue(result.activated)
+        self.assertEqual(result.provider, "refee")
+        self.assertEqual(result.txn_hash, "tx-refee-2")
+        self.assertEqual(profeex_provider.calls, [("activate", DESTINATION)])
+        self.assertEqual(refee_provider.calls, [("activate", DESTINATION)])
+
+    def test_terminal_profeex_activation_error_does_not_fall_back_to_refee(self):
+        redis_client = FakeRedis()
+        profeex_provider = DestinationActivationFailingProvider(temporary=False)
+        refee_provider = FakeRefeeActivationProvider({"txn_hash": "tx-refee-3"})
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True),
+                activation_providers=[
+                    ("profeex", profeex_provider),
+                    ("refee", refee_provider),
+                ],
+                redis_client=redis_client,
+            )
+
+        self.assertFalse(ctx.exception.temporary)
+        self.assertEqual(profeex_provider.calls, [("activate", DESTINATION)])
+        self.assertEqual(refee_provider.calls, [])
+
+    def test_both_activation_providers_fail_temporarily_raises_retryable(self):
+        redis_client = FakeRedis()
+        profeex_provider = ActivationFailingProvider(temporary=True)
+        refee_provider = FakeRefeeActivationProvider(
+            error=RefeeProviderError(
+                "activation",
+                "re:Fee unavailable",
+                "SERVICE_UNAVAILABLE",
+                temporary=True,
+            )
+        )
+
+        with self.assertRaises(activation.DestinationActivationError) as ctx:
+            activation.ensure_destination_activated(
+                DESTINATION,
+                quote_fn=self.quote_sequence(True, True),
+                activation_providers=[
+                    ("profeex", profeex_provider),
+                    ("refee", refee_provider),
+                ],
+                redis_client=redis_client,
+            )
+
+        self.assertTrue(ctx.exception.temporary)
+        self.assertEqual(
+            ctx.exception.code, "PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE"
+        )
+        self.assertEqual(profeex_provider.calls, [("activate", DESTINATION)])
+        self.assertEqual(refee_provider.calls, [("activate", DESTINATION)])
+        self.assertFalse(
+            any(
+                event[0] == "setex" and event[3].get("status") == "COMPLETED"
+                for event in redis_client.events
+            )
         )

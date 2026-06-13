@@ -11,6 +11,7 @@ from .config import config
 from .logging import logger
 from .payout_observability import record_destination_activation
 from .resource_providers.profeex import ProfeeXOrderError, ProfeeXProvider
+from .resource_providers.refee import RefeeProvider, RefeeProviderError
 
 
 ACTIVATION_UNAVAILABLE = "PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE"
@@ -25,6 +26,8 @@ class DestinationActivationResult:
     activated: bool
     task_id: str | None = None
     status: str | None = None
+    provider: str | None = None
+    txn_hash: str | None = None
 
 
 class DestinationActivationError(RuntimeError):
@@ -116,6 +119,10 @@ def _store_record(redis_client, destination: str, record: dict) -> None:
 
 
 def _raise_activation_error(exc: ProfeeXOrderError) -> None:
+    raise _destination_error_from_profeex(exc) from exc
+
+
+def _destination_error_from_profeex(exc: ProfeeXOrderError) -> DestinationActivationError:
     code = exc.error_code or ACTIVATION_UNAVAILABLE
     mapped = {
         "DUPLICATE_REQUEST": "PAYOUT_DESTINATION_ACTIVATION_DUPLICATE",
@@ -124,9 +131,37 @@ def _raise_activation_error(exc: ProfeeXOrderError) -> None:
         "RATE_LIMIT_EXCEEDED": ACTIVATION_UNAVAILABLE,
         "INSUFFICIENT_BALANCE": ACTIVATION_UNAVAILABLE,
     }.get(code, code)
-    raise DestinationActivationError(
-        str(exc), code=mapped, temporary=exc.temporary
-    ) from exc
+    return DestinationActivationError(str(exc), code=mapped, temporary=exc.temporary)
+
+
+def _profeex_fallback_eligible(exc: ProfeeXOrderError) -> bool:
+    if exc.error_code == "DUPLICATE_REQUEST":
+        return False
+    if exc.provider_failure is not None:
+        return exc.provider_failure.fallback_eligible is True
+    return exc.temporary
+
+
+def _destination_error_from_refee(exc: RefeeProviderError) -> DestinationActivationError:
+    mapped = {
+        "SERVICE_UNAVAILABLE": ACTIVATION_UNAVAILABLE,
+        "INSUFFICIENT_BALANCE": ACTIVATION_UNAVAILABLE,
+        "CONFIGURATION_ERROR": "CONFIGURATION_ERROR",
+        "SCHEMA_ERROR": "PAYOUT_DESTINATION_ACTIVATION_INVALID_RESPONSE",
+        "UNKNOWN_ERROR": ACTIVATION_UNAVAILABLE,
+    }.get(exc.error_code or "", exc.error_code or ACTIVATION_UNAVAILABLE)
+    return DestinationActivationError(str(exc), code=mapped, temporary=exc.temporary)
+
+
+def _activation_provider_chain(provider, activation_providers):
+    if activation_providers is not None:
+        return list(activation_providers)
+    if provider is not None:
+        return [("profeex", provider)]
+    providers = [("profeex", ProfeeXProvider())]
+    if getattr(config, "TRON_USDT_RESOURCE_FALLBACK_PROVIDER", None) == "refee":
+        providers.append(("refee", RefeeProvider()))
+    return providers
 
 
 def _task_id_from_order(order: dict) -> str:
@@ -158,6 +193,7 @@ def ensure_destination_activated(
     *,
     quote_fn,
     provider: ProfeeXProvider | None = None,
+    activation_providers=None,
     redis_client=None,
 ) -> DestinationActivationResult:
     started_at = time.monotonic()
@@ -169,7 +205,7 @@ def ensure_destination_activated(
             metric_result = "success"
             return DestinationActivationResult(activated=False, status="ALREADY_ACTIVE")
 
-        provider = provider or ProfeeXProvider()
+        providers = _activation_provider_chain(provider, activation_providers)
         redis_client = redis_client or _redis_client()
         lock = redis_client.lock(
             activation_lock_key(destination),
@@ -211,6 +247,8 @@ def ensure_destination_activated(
                         activated=True,
                         task_id=_record_task_id(record),
                         status=record_status,
+                        provider=record.get("provider"),
+                        txn_hash=record.get("txn_hash"),
                     )
                 raise DestinationActivationError(
                     "TRON destination activation record is stale",
@@ -230,69 +268,144 @@ def ensure_destination_activated(
                 "status": record_status,
                 "target": destination,
             }
-        if order is None:
+        last_error = None
+        for provider_name, activation_provider in providers:
+            if provider_name == "refee":
+                try:
+                    refee_result = activation_provider.activate_address(destination)
+                except RefeeProviderError as exc:
+                    last_error = _destination_error_from_refee(exc)
+                    if exc.temporary:
+                        continue
+                    raise last_error from exc
+
+                if (
+                    isinstance(refee_result, dict)
+                    and refee_result.get("status") == "already_active"
+                ):
+                    metric_result = "success"
+                    return DestinationActivationResult(
+                        activated=False,
+                        status="ALREADY_ACTIVE",
+                        provider="refee",
+                    )
+                txn_hash = (
+                    refee_result.get("txn_hash")
+                    if isinstance(refee_result, dict)
+                    else None
+                )
+                if not txn_hash:
+                    raise DestinationActivationError(
+                        "re:Fee activation response has no transaction hash",
+                        code="PAYOUT_DESTINATION_ACTIVATION_INVALID_RESPONSE",
+                        temporary=False,
+                    )
+                record = {
+                    "provider": "refee",
+                    "txn_hash": txn_hash,
+                    "status": "COMPLETED",
+                    "target": destination,
+                }
+                _store_record(redis_client, destination, record)
+                logger.info(
+                    "TRON destination activation complete via re:Fee: "
+                    "destination=%s txn_hash=%s",
+                    destination,
+                    txn_hash,
+                )
+                metric_result = "success"
+                return DestinationActivationResult(
+                    activated=True,
+                    status="COMPLETED",
+                    provider="refee",
+                    txn_hash=txn_hash,
+                )
+
+            if order is None:
+                try:
+                    order = activation_provider.activate_address(destination)
+                except ProfeeXOrderError as exc:
+                    if exc.error_code == "DUPLICATE_REQUEST":
+                        if _quote_status(destination, quote_fn) == "active":
+                            metric_result = "success"
+                            return DestinationActivationResult(
+                                activated=False, status="ALREADY_ACTIVE"
+                            )
+                    last_error = _destination_error_from_profeex(exc)
+                    if _profeex_fallback_eligible(exc):
+                        continue
+                    raise last_error from exc
+                except DestinationActivationError as exc:
+                    last_error = exc
+                    if exc.temporary:
+                        continue
+                    raise
+                task_id = _task_id_from_order(order)
+                _store_record(redis_client, destination, order)
+
+            settings = config.PROFEEX
+            if settings is None:
+                raise DestinationActivationError(
+                    "PROFEEX config is missing. Cannot wait for destination activation.",
+                    code="CONFIGURATION_ERROR",
+                    temporary=False,
+                )
             try:
-                order = provider.activate_address(destination)
+                active_order = activation_provider.wait_for_activation(
+                    settings, task_id, order
+                )
             except ProfeeXOrderError as exc:
-                if exc.error_code == "DUPLICATE_REQUEST":
-                    if _quote_status(destination, quote_fn) == "active":
-                        metric_result = "success"
-                        return DestinationActivationResult(
-                            activated=False, status="ALREADY_ACTIVE"
-                        )
-                _raise_activation_error(exc)
-            task_id = _task_id_from_order(order)
-            _store_record(redis_client, destination, order)
+                try:
+                    _store_record(
+                        redis_client,
+                        destination,
+                        {
+                            "task_id": task_id,
+                            "status": "PROCESSING" if exc.temporary else "FAILED",
+                            "error_code": exc.error_code,
+                            "error_message": str(exc),
+                        },
+                    )
+                except DestinationActivationError as store_exc:
+                    logger.warning(
+                        "TRON destination activation failure record store failed: "
+                        "destination=%s task_id=%s code=%s",
+                        destination,
+                        task_id,
+                        store_exc.code,
+                    )
+                last_error = _destination_error_from_profeex(exc)
+                raise last_error from exc
+            except DestinationActivationError:
+                raise
 
-        settings = config.PROFEEX
-        if settings is None:
-            raise DestinationActivationError(
-                "PROFEEX config is missing. Cannot wait for destination activation.",
-                code="CONFIGURATION_ERROR",
-                temporary=False,
-            )
-        try:
-            active_order = provider.wait_for_activation(settings, task_id, order)
-        except ProfeeXOrderError as exc:
-            try:
-                _store_record(
-                    redis_client,
-                    destination,
-                    {
-                        "task_id": task_id,
-                        "status": "PROCESSING" if exc.temporary else "FAILED",
-                        "error_code": exc.error_code,
-                        "error_message": str(exc),
-                    },
+            _store_record(redis_client, destination, active_order)
+            if _quote_status(destination, quote_fn) != "active":
+                raise DestinationActivationError(
+                    "TRON destination is still not active after ProfeeX activation",
+                    code="PAYOUT_DESTINATION_ACTIVATION_PENDING",
+                    temporary=True,
                 )
-            except DestinationActivationError as store_exc:
-                logger.warning(
-                    "TRON destination activation failure record store failed: "
-                    "destination=%s task_id=%s code=%s",
-                    destination,
-                    task_id,
-                    store_exc.code,
-                )
-            _raise_activation_error(exc)
-
-        _store_record(redis_client, destination, active_order)
-        if _quote_status(destination, quote_fn) != "active":
-            raise DestinationActivationError(
-                "TRON destination is still not active after ProfeeX activation",
-                code="PAYOUT_DESTINATION_ACTIVATION_PENDING",
-                temporary=True,
+            logger.info(
+                "TRON destination activation complete: "
+                "destination=%s task_id=%s status=%s",
+                destination,
+                task_id,
+                active_order.get("status"),
             )
-        logger.info(
-            "TRON destination activation complete: destination=%s task_id=%s status=%s",
-            destination,
-            task_id,
-            active_order.get("status"),
-        )
-        metric_result = "success"
-        return DestinationActivationResult(
-            activated=True,
-            task_id=task_id,
-            status=active_order.get("status"),
+            metric_result = "success"
+            return DestinationActivationResult(
+                activated=True,
+                task_id=task_id,
+                status=active_order.get("status"),
+                provider=active_order.get("provider"),
+            )
+        if last_error is not None:
+            raise last_error
+        raise DestinationActivationError(
+            "No TRON destination activation providers are configured",
+            code=ACTIVATION_UNAVAILABLE,
+            temporary=False,
         )
     except DestinationActivationError as exc:
         metric_result = "retryable_error" if exc.temporary else "terminal_error"

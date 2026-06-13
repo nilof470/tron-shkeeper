@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from decimal import Decimal
-import time
 
 import tronpy.keys
+import tronpy.exceptions
 
 from app.config import config
 from app.connection_manager import ConnectionManager
@@ -13,10 +13,23 @@ from app.payout_destination_activation import (
     DestinationActivationError,
     ensure_destination_activated,
 )
-from app.resource_providers.factory import get_bandwidth_provider, get_energy_provider
 from app.resource_providers.profeex import ProfeeXProvider
 from app.schemas import KeyType
-from app.utils import get_available_energy, get_key, has_free_bw
+from app.usdt_resource_provisioning import (
+    UsdtResourceError,
+    UsdtResourceQuote,
+    estimate_usdt_transfer_resources,
+    ensure_usdt_transfer_resources,
+)
+from app.utils import get_key
+
+
+TEMPORARY_RESOURCE_BLOCKING_CODES = {
+    "RESOURCE_ESTIMATE_UNAVAILABLE",
+    "RESOURCE_READ_FAILED",
+    "RESOURCE_RECHECK_FAILED",
+    "PROVIDER_FAILED",
+}
 
 
 @dataclass
@@ -39,6 +52,7 @@ class PayoutResourceQuote:
     submit_ready: bool
     blocking_code: str | None
     blocking_reason: str | None
+    estimate_provider: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -51,49 +65,141 @@ class PayoutResourceError(RuntimeError):
         *,
         code: str | None = None,
         temporary: bool = False,
+        provider_order_accepted: bool = False,
+        provider_task_id: str | None = None,
     ):
         super().__init__(message)
         self.code = code
         self.temporary = temporary
-
-
-def get_available_bandwidth(account_resource: dict) -> int:
-    staked = max(
-        account_resource.get("NetLimit", 0) - account_resource.get("NetUsed", 0),
-        0,
-    )
-    daily = max(
-        account_resource.get("freeNetLimit", 0)
-        - account_resource.get("freeNetUsed", 0),
-        0,
-    )
-    return max(staked, daily)
-
-
-def provider_label(provider, configured_name: str) -> str | None:
-    if provider is None:
-        return None
-    return configured_name
-
-
-def configured_energy_provider(tron_client):
-    if config.ENERGY_PROVIDER == "staking":
-        return None
-    return get_energy_provider(tron_client=tron_client)
+        self.provider_order_accepted = provider_order_accepted
+        self.provider_task_id = provider_task_id
 
 
 def estimate_usdt_transfer_fee_via_profeex(destination: str) -> dict | None:
     return ProfeeXProvider().estimate_usdt_transfer_fee(destination)
 
 
-def _get_fee_deposit_resources(client, fee_deposit_address: str) -> dict:
+def _destination_is_active(client, destination: str) -> bool | None:
     try:
-        return client.get_account_resource(fee_deposit_address)
-    except Exception as exc:
-        raise PayoutResourceError(
-            "Unable to read TRON fee-deposit account resources",
-            code="RESOURCE_READ_FAILED",
-        ) from exc
+        client.get_account(destination)
+    except tronpy.exceptions.AddressNotFound:
+        return False
+    except Exception:
+        logger.exception(
+            "Unable to read TRON payout destination account activation status"
+        )
+        return None
+    return True
+
+
+def _activation_quote_via_chain_or_profeex(client, destination: str) -> dict | None:
+    active = _destination_is_active(client, destination)
+    if active is True:
+        return {"is_new_address": False}
+    if active is False:
+        return {"is_new_address": True}
+    return None
+
+
+def _destination_activation_quote_fn(client, quote: PayoutResourceQuote):
+    if quote.estimate_provider == "refee":
+        return lambda receiver: _activation_quote_via_chain_or_profeex(
+            client,
+            receiver,
+        )
+    return lambda receiver: estimate_usdt_transfer_fee_via_profeex(receiver)
+
+
+def _readiness_from_usdt(readiness) -> ResourceReadiness:
+    return ResourceReadiness(
+        provider=readiness.provider,
+        required=readiness.required,
+        available=readiness.available,
+        deficit=readiness.deficit,
+    )
+
+
+def _quote_from_usdt(quote: UsdtResourceQuote) -> PayoutResourceQuote:
+    return PayoutResourceQuote(
+        source_address=quote.source_address,
+        destination=quote.destination,
+        amount=quote.amount,
+        activation_required=quote.activation_required,
+        estimated_trx_burned=quote.estimated_trx_burned,
+        energy=_readiness_from_usdt(quote.energy),
+        bandwidth=_readiness_from_usdt(quote.bandwidth),
+        submit_ready=quote.submit_ready,
+        blocking_code=quote.blocking_code,
+        blocking_reason=quote.blocking_reason,
+        estimate_provider=quote.estimate_provider,
+    )
+
+
+def _blocked_quote(
+    quote: PayoutResourceQuote,
+    *,
+    code: str,
+    reason: str,
+    activation_required: bool | None = None,
+) -> PayoutResourceQuote:
+    return PayoutResourceQuote(
+        source_address=quote.source_address,
+        destination=quote.destination,
+        amount=quote.amount,
+        activation_required=(
+            quote.activation_required
+            if activation_required is None
+            else activation_required
+        ),
+        estimated_trx_burned=quote.estimated_trx_burned,
+        energy=quote.energy,
+        bandwidth=quote.bandwidth,
+        submit_ready=False,
+        blocking_code=code,
+        blocking_reason=reason,
+        estimate_provider=quote.estimate_provider,
+    )
+
+
+def _quote_with_refee_activation_check(
+    client,
+    quote: PayoutResourceQuote,
+) -> PayoutResourceQuote:
+    if quote.estimate_provider != "refee" or quote.activation_required:
+        return quote
+    active = _destination_is_active(client, quote.destination)
+    if active is True:
+        return quote
+    if active is False:
+        return _blocked_quote(
+            quote,
+            code="DESTINATION_NOT_ACTIVATED",
+            reason="TRON payout destination is not activated",
+            activation_required=True,
+        )
+    return _blocked_quote(
+        quote,
+        code="RESOURCE_READ_FAILED",
+        reason="Unable to read TRON payout destination account activation status",
+    )
+
+
+def _payout_error_from_usdt(exc: UsdtResourceError) -> PayoutResourceError:
+    return PayoutResourceError(
+        str(exc),
+        code=exc.code,
+        temporary=exc.temporary,
+        provider_order_accepted=exc.provider_order_accepted,
+        provider_task_id=exc.provider_task_id,
+    )
+
+
+def _raise_from_quote(quote: PayoutResourceQuote) -> None:
+    raise PayoutResourceError(
+        quote.blocking_reason or "TRON USDT payout resources are not ready",
+        code=quote.blocking_code,
+        temporary=quote.blocking_code in TEMPORARY_RESOURCE_BLOCKING_CODES,
+    )
 
 
 def estimate_fee_deposit_resources_for_usdt_payout(
@@ -105,76 +211,17 @@ def estimate_fee_deposit_resources_for_usdt_payout(
     tronpy.keys.to_base58check_address(destination)
     client = tron_client or ConnectionManager.client()
     _, fee_deposit_address = get_key(KeyType.fee_deposit)
-    account_resource = _get_fee_deposit_resources(client, fee_deposit_address)
-
-    fee_estimate = estimate_usdt_transfer_fee_via_profeex(destination)
-    blocking_reason = None
-    blocking_code = None
-    activation_required = False
-    estimated_trx_burned = None
-    if fee_estimate is None:
-        blocking_code = "PROFEEX_ESTIMATE_UNAVAILABLE"
-        blocking_reason = "Unable to estimate TRON USDT transfer energy through ProfeeX"
-        energy_required = 0
-    else:
-        energy_required = fee_estimate["energy_required"]
-        activation_required = bool(fee_estimate.get("is_new_address"))
-        trx_burned = fee_estimate.get("trx_burned")
-        estimated_trx_burned = str(trx_burned) if trx_burned is not None else None
-        if activation_required:
-            blocking_code = "DESTINATION_NOT_ACTIVATED"
-            blocking_reason = "TRON payout destination is not activated"
-
-    energy_available = get_available_energy(account_resource)
-    energy_deficit = max(energy_required - energy_available, 0)
-    bandwidth_required = config.BANDWIDTH_PER_TRC20_TRANSFER_CALL
-    bandwidth_available = get_available_bandwidth(account_resource)
-    bandwidth_deficit = (
-        0
-        if has_free_bw(
+    try:
+        usdt_quote = estimate_usdt_transfer_resources(
             fee_deposit_address,
-            bandwidth_required,
+            destination,
+            amount,
             tron_client=client,
         )
-        else max(bandwidth_required - bandwidth_available, 0)
-    )
-
-    energy_provider = configured_energy_provider(client)
-    bandwidth_provider = get_bandwidth_provider(tron_client=client)
-
-    if blocking_reason is None and energy_deficit and energy_provider is None:
-        blocking_code = "PROVIDER_UNAVAILABLE"
-        blocking_reason = (
-            "No energy provider is configured for TRON USDT payout resources"
-        )
-    elif blocking_reason is None and bandwidth_deficit and bandwidth_provider is None:
-        blocking_code = "PROVIDER_UNAVAILABLE"
-        blocking_reason = (
-            "No bandwidth provider is configured for TRON USDT payout resources"
-        )
-
-    return PayoutResourceQuote(
-        source_address=fee_deposit_address,
-        destination=destination,
-        amount=str(amount),
-        activation_required=activation_required,
-        estimated_trx_burned=estimated_trx_burned,
-        energy=ResourceReadiness(
-            provider=provider_label(energy_provider, config.ENERGY_PROVIDER),
-            required=energy_required,
-            available=energy_available,
-            deficit=energy_deficit,
-        ),
-        bandwidth=ResourceReadiness(
-            provider=provider_label(bandwidth_provider, config.BANDWIDTH_PROVIDER),
-            required=bandwidth_required,
-            available=bandwidth_available,
-            deficit=bandwidth_deficit,
-        ),
-        submit_ready=blocking_reason is None,
-        blocking_code=blocking_code,
-        blocking_reason=blocking_reason,
-    )
+    except UsdtResourceError as exc:
+        raise _payout_error_from_usdt(exc) from exc
+    quote = _quote_from_usdt(usdt_quote)
+    return _quote_with_refee_activation_check(client, quote)
 
 
 def ensure_fee_deposit_resources_for_usdt_payout(
@@ -190,6 +237,7 @@ def ensure_fee_deposit_resources_for_usdt_payout(
         amount,
         tron_client=client,
     )
+    activation_performed = False
     if (
         not quote.submit_ready
         and quote.blocking_code == "DESTINATION_NOT_ACTIVATED"
@@ -199,97 +247,23 @@ def ensure_fee_deposit_resources_for_usdt_payout(
         try:
             ensure_destination_activated(
                 destination,
-                quote_fn=lambda receiver: estimate_usdt_transfer_fee_via_profeex(
-                    receiver
-                ),
+                quote_fn=_destination_activation_quote_fn(client, quote),
             )
         except DestinationActivationError as exc:
             raise PayoutResourceError(
                 str(exc), code=exc.code, temporary=exc.temporary
             ) from exc
-        quote = estimate_fee_deposit_resources_for_usdt_payout(
+        activation_performed = True
+    if not quote.submit_ready and not activation_performed:
+        _raise_from_quote(quote)
+
+    try:
+        ensured = ensure_usdt_transfer_resources(
+            quote.source_address,
             destination,
             amount,
             tron_client=client,
         )
-    if not quote.submit_ready:
-        raise PayoutResourceError(
-            quote.blocking_reason or "TRON USDT payout resources are not ready",
-            code=quote.blocking_code,
-        )
-
-    provisioned = False
-    if quote.energy.deficit:
-        energy_provider = configured_energy_provider(client)
-        if energy_provider is None:
-            raise PayoutResourceError(
-                "No energy provider is configured",
-                code="PROVIDER_UNAVAILABLE",
-            )
-        account_resource = _get_fee_deposit_resources(client, quote.source_address)
-        logger.info(
-            f"Preparing TRON USDT payout energy for {quote.source_address}: "
-            f"required={quote.energy.required} deficit={quote.energy.deficit}"
-        )
-        if not energy_provider.acquire_energy(
-            quote.source_address,
-            quote.energy.deficit,
-            account_resource,
-            minimum_energy_required=quote.energy.required,
-            strict_minimum_required=True,
-        ):
-            raise PayoutResourceError(
-                "Energy provider failed to prepare resources",
-                code="PROVIDER_FAILED",
-            )
-        provisioned = True
-
-    if quote.bandwidth.deficit:
-        bandwidth_provider = get_bandwidth_provider(tron_client=client)
-        if bandwidth_provider is None:
-            raise PayoutResourceError(
-                "No bandwidth provider is configured",
-                code="PROVIDER_UNAVAILABLE",
-            )
-        logger.info(
-            f"Preparing TRON USDT payout bandwidth for {quote.source_address}: "
-            f"required={quote.bandwidth.required} deficit={quote.bandwidth.deficit}"
-        )
-        if not bandwidth_provider.acquire_bandwidth(
-            quote.source_address,
-            quote.bandwidth.required,
-        ):
-            raise PayoutResourceError(
-                "Bandwidth provider failed to prepare resources",
-                code="PROVIDER_FAILED",
-            )
-        provisioned = True
-
-    if (
-        not provisioned
-        and quote.submit_ready
-        and quote.energy.deficit == 0
-        and quote.bandwidth.deficit == 0
-    ):
-        return quote
-
-    for attempt in range(config.PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_ATTEMPTS):
-        refreshed = estimate_fee_deposit_resources_for_usdt_payout(
-            destination,
-            amount,
-            tron_client=client,
-        )
-        if (
-            refreshed.submit_ready
-            and refreshed.energy.deficit == 0
-            and refreshed.bandwidth.deficit == 0
-        ):
-            return refreshed
-        if attempt + 1 < config.PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_ATTEMPTS:
-            time.sleep(config.PAYOUT_RESOURCE_POST_ACTIVE_RECHECK_SLEEP_SEC)
-
-    raise PayoutResourceError(
-        refreshed.blocking_reason
-        or "TRON USDT payout resources are still insufficient after provider provisioning",
-        code=refreshed.blocking_code or "RESOURCE_RECHECK_FAILED",
-    )
+    except UsdtResourceError as exc:
+        raise _payout_error_from_usdt(exc) from exc
+    return _quote_from_usdt(ensured)

@@ -75,6 +75,26 @@ class ProfeeXActivationProviderTests(unittest.TestCase):
         )
         self.assertEqual(captured["headers"], {"X-API-Key": "secret"})
 
+    def test_activation_202_malformed_body_is_accepted_without_task_id(self):
+        profeex.requests.post = lambda *args, **kwargs: FakeResponse(
+            202,
+            [],
+        )
+
+        with self.assertRaises(profeex.ProfeeXOrderError) as ctx:
+            profeex.ProfeeXProvider().activate_address(
+                "TTMqzSAwwcM1UqMy7Up2eQuNXZ6uUZ9AN5"
+            )
+
+        self.assertEqual(ctx.exception.resource_name, "activation")
+        self.assertEqual(ctx.exception.error_code, "ACCEPTED_ORDER_WITHOUT_TASK_ID")
+        self.assertTrue(ctx.exception.temporary)
+        self.assertEqual(
+            ctx.exception.provider_failure.code, "ACCEPTED_ORDER_WITHOUT_TASK_ID"
+        )
+        self.assertTrue(ctx.exception.provider_failure.order_accepted)
+        self.assertFalse(ctx.exception.provider_failure.fallback_eligible)
+
     def test_activation_409_is_retryable_duplicate(self):
         profeex.requests.post = lambda *args, **kwargs: FakeResponse(
             409,
@@ -118,6 +138,8 @@ class ProfeeXActivationProviderTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.resource_name, "activation")
         self.assertEqual(ctx.exception.error_code, "SERVICE_UNAVAILABLE")
+        self.assertEqual(ctx.exception.provider_failure.code, "NETWORK_ERROR")
+        self.assertTrue(ctx.exception.provider_failure.fallback_eligible)
         self.assertTrue(ctx.exception.temporary)
 
     def test_activation_422_invalid_address_is_terminal(self):
@@ -161,6 +183,8 @@ class ProfeeXActivationProviderTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.resource_name, "activation")
         self.assertEqual(ctx.exception.error_code, "UNKNOWN_ERROR")
+        self.assertEqual(ctx.exception.provider_failure.code, "HTTP_500")
+        self.assertTrue(ctx.exception.provider_failure.fallback_eligible)
         self.assertTrue(ctx.exception.temporary)
 
     def test_wait_for_activation_treats_completed_as_success(self):

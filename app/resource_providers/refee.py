@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import time
 from decimal import Decimal, ROUND_CEILING
 
@@ -12,6 +13,23 @@ from ..logging import logger
 from ..utils import get_available_energy, has_free_bw
 
 
+class RefeeProviderError(RuntimeError):
+    def __init__(self, resource_name, message, error_code=None, temporary=False):
+        super().__init__(message)
+        self.resource_name = resource_name
+        self.error_code = error_code
+        self.temporary = temporary
+
+
+@dataclass
+class RefeeProviderFailure:
+    code: str
+    temporary: bool
+    fallback_eligible: bool
+    order_accepted: bool = False
+    task_id: str | None = None
+
+
 class RefeeProvider(EnergyProvider, BandwidthProvider):
     REQUEST_TIMEOUT_SEC = 10
     SUCCESS_STATUSES = {"delegated"}
@@ -20,6 +38,25 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
 
     def __init__(self, tron_client=None):
         self.tron_client = tron_client
+        self.last_failure: RefeeProviderFailure | None = None
+
+    def _set_failure(
+        self,
+        code: str,
+        *,
+        temporary: bool = True,
+        fallback_eligible: bool = False,
+        order_accepted: bool = False,
+        task_id: str | None = None,
+    ) -> RefeeProviderFailure:
+        self.last_failure = RefeeProviderFailure(
+            code=code,
+            temporary=temporary,
+            fallback_eligible=fallback_eligible,
+            order_accepted=order_accepted,
+            task_id=task_id,
+        )
+        return self.last_failure
 
     def acquire_energy(
         self,
@@ -30,8 +67,14 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
         minimum_energy_required: int | None = None,
         strict_minimum_required: bool = False,
     ) -> bool:
+        self.last_failure = None
         settings = config.REFEE
         if settings is None:
+            self._set_failure(
+                "CONFIGURATION_ERROR",
+                temporary=False,
+                fallback_eligible=False,
+            )
             logger.warning("REFEE config is missing. Terminating transfer.")
             return False
 
@@ -62,6 +105,7 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
             tron_client, receiver, "pre-order"
         )
         if onetime_energy_available is None:
+            self._set_failure("RESOURCE_READ_FAILED")
             return False
         if onetime_energy_available >= energy_required:
             logger.info(
@@ -72,6 +116,12 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
 
         if fixed_order_amount > 0:
             requested_amount = fixed_order_amount
+            if strict_minimum_required and minimum_energy_required is not None:
+                missing_for_minimum = max(
+                    minimum_energy_required - onetime_energy_available,
+                    0,
+                )
+                requested_amount = max(requested_amount, missing_for_minimum)
         else:
             energy_to_provision = energy_required - onetime_energy_available
             requested_amount = int(
@@ -91,29 +141,50 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
 
         order_id = order.get("id")
         if not order_id:
+            self._set_failure(
+                "ACCEPTED_ORDER_WITHOUT_ID",
+                order_accepted=True,
+            )
             logger.warning(f"re:Fee order response has no id field: {order}")
             return False
 
         delegated_order = self._wait_until_delegated(settings, order_id, order)
         if delegated_order is None:
+            if self.last_failure is None:
+                self._set_failure(
+                    "ORDER_NOT_DELEGATED",
+                    order_accepted=True,
+                    task_id=order_id,
+                )
             return False
 
         onetime_energy_available = self._get_available_energy(
             tron_client, receiver, "post-delegation"
         )
         if onetime_energy_available is None:
+            self._set_failure(
+                "RESOURCE_READ_FAILED",
+                order_accepted=True,
+                task_id=order_id,
+            )
             return False
         logger.info(
             f"re:Fee on-chain check: {receiver=} "
             f"{onetime_energy_available=} {energy_required=}"
         )
         if onetime_energy_available < energy_required:
+            self._set_failure(
+                "RESOURCE_RECHECK_FAILED",
+                order_accepted=True,
+                task_id=order_id,
+            )
             logger.warning(
                 "Onetime account has not enough energy after re:Fee delegation. "
                 "Terminating transfer."
             )
             return False
 
+        self.last_failure = None
         logger.info(f"re:Fee energy successfully delegated: {delegated_order}")
         return True
 
@@ -123,9 +194,130 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
             "Skipping undelegate."
         )
 
-    def acquire_bandwidth(self, receiver: str, bandwidth_required: int) -> bool:
+    def activate_address(self, destination: str) -> dict | None:
         settings = config.REFEE
         if settings is None:
+            raise RefeeProviderError(
+                "activation",
+                "REFEE config is missing. Cannot activate destination.",
+                "CONFIGURATION_ERROR",
+                temporary=False,
+            )
+        try:
+            response = requests.post(
+                self._url(settings, "/api/functions/activate"),
+                params={"address": destination},
+                headers=self._headers(settings),
+                timeout=self.REQUEST_TIMEOUT_SEC,
+            )
+        except requests.RequestException as exc:
+            raise RefeeProviderError(
+                "activation",
+                f"re:Fee activation request failed: {exc}",
+                "SERVICE_UNAVAILABLE",
+                temporary=True,
+            ) from exc
+
+        if response.status_code == 400:
+            return {"status": "already_active", "address": destination}
+        if response.status_code == 402:
+            raise RefeeProviderError(
+                "activation",
+                f"re:Fee activation balance is insufficient: {response.text}",
+                "INSUFFICIENT_BALANCE",
+                temporary=True,
+            )
+        if response.status_code in {401, 403, 422}:
+            raise RefeeProviderError(
+                "activation",
+                f"re:Fee activation configuration error: {response.text}",
+                "CONFIGURATION_ERROR",
+                temporary=False,
+            )
+        if (
+            response.status_code in {408, 429}
+            or 500 <= response.status_code <= 599
+        ):
+            raise RefeeProviderError(
+                "activation",
+                f"re:Fee activation unavailable: {response.text}",
+                "SERVICE_UNAVAILABLE",
+                temporary=True,
+            )
+        if response.status_code != 200:
+            raise RefeeProviderError(
+                "activation",
+                f"re:Fee activation rejected with status {response.status_code}: {response.text}",
+                "UNKNOWN_ERROR",
+                temporary=True,
+            )
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise RefeeProviderError(
+                "activation",
+                "re:Fee activation response is not valid JSON",
+                "SCHEMA_ERROR",
+                temporary=False,
+            ) from exc
+        if not isinstance(data, dict) or not data.get("txn_hash"):
+            raise RefeeProviderError(
+                "activation",
+                f"re:Fee activation response has no txn_hash: {data}",
+                "SCHEMA_ERROR",
+                temporary=False,
+            )
+        return data
+
+    def estimate_usdt_transfer_fee(self, source_address: str) -> dict | None:
+        settings = config.REFEE
+        if settings is None:
+            logger.warning("REFEE config is missing. Cannot estimate USDT fee.")
+            return None
+        try:
+            response = requests.get(
+                self._url(settings, f"/api/functions/cost/{source_address}"),
+                headers=self._headers(settings),
+                timeout=self.REQUEST_TIMEOUT_SEC,
+            )
+        except requests.RequestException:
+            logger.exception("re:Fee USDT fee estimate request failed")
+            return None
+        if response.status_code != 200:
+            logger.warning(
+                f"re:Fee USDT fee estimate rejected with status "
+                f"{response.status_code}: {response.text}"
+            )
+            return None
+        try:
+            data = response.json()
+        except ValueError:
+            logger.exception("re:Fee USDT fee estimate response is not valid JSON")
+            return None
+        if (
+            not isinstance(data, dict)
+            or type(data.get("cost")) is not int
+            or data["cost"] <= 0
+        ):
+            logger.warning(f"re:Fee USDT fee estimate has invalid cost: {data}")
+            return None
+        return {
+            "energy_required": data["cost"],
+            "is_new_address": False,
+            "trx_burned": None,
+            "provider": "refee",
+        }
+
+    def acquire_bandwidth(self, receiver: str, bandwidth_required: int) -> bool:
+        self.last_failure = None
+        settings = config.REFEE
+        if settings is None:
+            self._set_failure(
+                "CONFIGURATION_ERROR",
+                temporary=False,
+                fallback_eligible=False,
+            )
             logger.warning("REFEE config is missing. Terminating transfer.")
             return False
 
@@ -161,20 +353,54 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
 
         order_id = order.get("id")
         if not order_id:
+            self._set_failure(
+                "ACCEPTED_ORDER_WITHOUT_ID",
+                order_accepted=True,
+            )
             logger.warning(f"re:Fee bandwidth order response has no id field: {order}")
             return False
 
         delegated_order = self._wait_until_delegated(settings, order_id, order)
         if delegated_order is None:
+            if self.last_failure is None:
+                self._set_failure(
+                    "ORDER_NOT_DELEGATED",
+                    order_accepted=True,
+                    task_id=order_id,
+                )
             return False
 
-        if not has_free_bw(receiver, bandwidth_required, tron_client=tron_client):
+        try:
+            bandwidth_ready = has_free_bw(
+                receiver,
+                bandwidth_required,
+                tron_client=tron_client,
+            )
+        except Exception:
+            self._set_failure(
+                "RESOURCE_READ_FAILED",
+                order_accepted=True,
+                task_id=order_id,
+            )
+            logger.exception(
+                "Failed to read bandwidth after re:Fee delegation for %s",
+                receiver,
+            )
+            return False
+
+        if not bandwidth_ready:
+            self._set_failure(
+                "RESOURCE_RECHECK_FAILED",
+                order_accepted=True,
+                task_id=order_id,
+            )
             logger.warning(
                 "Onetime account has not enough bandwidth after re:Fee delegation. "
                 "Terminating transfer."
             )
             return False
 
+        self.last_failure = None
         logger.info(f"re:Fee bandwidth successfully delegated: {delegated_order}")
         return True
 
@@ -201,10 +427,16 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
                 timeout=self.REQUEST_TIMEOUT_SEC,
             )
         except requests.RequestException:
+            self._set_failure(
+                "SERVICE_UNAVAILABLE",
+                temporary=True,
+                fallback_eligible=True,
+            )
             logger.exception("re:Fee create order request failed")
             return None
 
         if response.status_code != 202:
+            self._set_create_order_http_failure(response.status_code)
             logger.warning(
                 f"re:Fee create order rejected with status "
                 f"{response.status_code}: {response.text}"
@@ -214,14 +446,61 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
         try:
             data = response.json()
         except ValueError:
+            self._set_failure(
+                "ACCEPTED_MALFORMED_RESPONSE",
+                temporary=True,
+                fallback_eligible=False,
+                order_accepted=True,
+            )
             logger.exception("re:Fee create order response is not valid JSON")
             return None
         if not isinstance(data, dict):
+            self._set_failure(
+                "ACCEPTED_MALFORMED_RESPONSE",
+                temporary=True,
+                fallback_eligible=False,
+                order_accepted=True,
+            )
             logger.warning(f"re:Fee create order response is not an object: {data}")
             return None
 
         logger.info(f"re:Fee order accepted: {data}")
         return data
+
+    def _set_create_order_http_failure(self, status_code: int) -> None:
+        if status_code == 400:
+            self._set_failure(
+                "INVALID_PARAMETERS",
+                temporary=False,
+                fallback_eligible=False,
+            )
+            return
+        if status_code == 402:
+            self._set_failure(
+                "INSUFFICIENT_BALANCE",
+                temporary=True,
+                fallback_eligible=False,
+            )
+            return
+        if status_code in {401, 403, 422}:
+            self._set_failure(
+                "CONFIGURATION_ERROR",
+                temporary=False,
+                fallback_eligible=False,
+            )
+            return
+        if status_code in {408, 429} or 500 <= status_code <= 599:
+            self._set_failure(
+                "SERVICE_UNAVAILABLE",
+                temporary=True,
+                fallback_eligible=True,
+            )
+            return
+        self._set_failure(
+            "UNKNOWN_ERROR",
+            temporary=True,
+            fallback_eligible=False,
+        )
 
     def _wait_until_delegated(
         self, settings, order_id: str, initial_order: dict
@@ -239,6 +518,11 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
             if status in self.SUCCESS_STATUSES:
                 return order
             if status in self.FAILURE_STATUSES:
+                self._set_failure(
+                    "ORDER_FAILED",
+                    order_accepted=True,
+                    task_id=order_id,
+                )
                 logger.warning(f"re:Fee order {order_id} failed: {order}")
                 return None
 
@@ -264,14 +548,29 @@ class RefeeProvider(EnergyProvider, BandwidthProvider):
             try:
                 order = response.json()
             except ValueError:
+                self._set_failure(
+                    "POLL_MALFORMED_RESPONSE",
+                    order_accepted=True,
+                    task_id=order_id,
+                )
                 logger.exception(f"re:Fee poll response is not valid JSON: {order_id}")
                 return None
             if not isinstance(order, dict):
+                self._set_failure(
+                    "POLL_MALFORMED_RESPONSE",
+                    order_accepted=True,
+                    task_id=order_id,
+                )
                 logger.warning(
                     f"re:Fee poll response is not an object for order {order_id}: {order}"
                 )
                 return None
 
+        self._set_failure(
+            "ORDER_TIMEOUT",
+            order_accepted=True,
+            task_id=order_id,
+        )
         logger.warning(
             f"re:Fee order {order_id} did not reach delegated status within "
             f"{settings.timeout_sec} seconds"

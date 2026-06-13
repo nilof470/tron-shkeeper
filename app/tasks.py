@@ -48,6 +48,10 @@ from .payout_callback_outbox import (
 from .payout_resources import ensure_fee_deposit_resources_for_usdt_payout
 from .resource_providers import get_bandwidth_provider, get_energy_provider
 from .logging import logger
+from .usdt_resource_provisioning import (
+    UsdtResourceError,
+    ensure_usdt_transfer_resources,
+)
 from .wallet_encryption import wallet_encryption
 from .sweep_guard import is_sweep_allowed
 
@@ -66,38 +70,6 @@ def estimate_trc20_sweep_energy(
     contract_address,
     tron_client,
 ):
-    if symbol == "USDT" and config.ENERGY_PROVIDER == "profeex":
-        logger.info(
-            "Estimate the amount of energy needed to make USDT transfer via ProfeeX"
-        )
-        estimate = provider.estimate_usdt_transfer_fee(receiver_address)
-        if estimate is None:
-            logger.warning(
-                "Unable to estimate USDT transfer energy through ProfeeX. "
-                "Terminating transfer."
-            )
-            return None
-        energy_required = estimate["energy_required"]
-        logger.info(
-            "ProfeeX estimated amount of energy for USDT transfer is: "
-            f"{energy_required}. Details: {estimate}"
-        )
-        return energy_required
-
-    if symbol == "USDT" and config.ENERGY_PROVIDER == "refee":
-        energy_required = int(config.REFEE_FIXED_ENERGY_ORDER_AMOUNT)
-        if energy_required <= 0:
-            logger.warning(
-                "REFEE_FIXED_ENERGY_ORDER_AMOUNT must be greater than 0 for "
-                "USDT sweep energy provisioning. Terminating transfer."
-            )
-            return None
-        logger.info(
-            "Using fixed re:Fee amount as USDT sweep energy requirement: "
-            f"{energy_required}"
-        )
-        return energy_required
-
     logger.info("Estimate the amount of energy needed to make transfer")
     energy_required = tron_client.get_estimated_energy(
         onetime_address,
@@ -252,6 +224,81 @@ def _trc20_transfer_succeeded(tx_info: dict) -> bool:
     return tx_info.get("receipt", {}).get("result") == "SUCCESS"
 
 
+def ensure_trc20_sweep_source_active(
+    tron_client,
+    main_publ_key,
+    main_priv_key,
+    onetime_publ_key,
+):
+    try:
+        onetime_address_resources = tron_client.get_account_resource(
+            onetime_publ_key
+        )
+        logger.info(
+            f"Onetime {onetime_publ_key} is already on chain, "
+            f"skipping activation. Resource details {onetime_address_resources=}"
+        )
+        return True, None, onetime_address_resources
+    except tronpy.exceptions.AddressNotFound:
+        TRX_FOR_ACTIVATION = "1.1"
+        logger.info(
+            f"Check if main account has {TRX_FOR_ACTIVATION} TRX for activation"
+        )
+        main_trx_balance = tron_client.get_account_balance(main_publ_key)
+        logger.info(f"Main account balance: {main_trx_balance} TRX")
+        if main_trx_balance < Decimal(TRX_FOR_ACTIVATION):
+            logger.warning(
+                f"Not enough TRX to activate {onetime_publ_key}. Terminating transfer."
+            )
+            return False, None, None
+
+        logger.info("Main account TRX balance OK.")
+        logger.info("Check main account free bandwidth")
+        if has_free_bw(
+            main_publ_key,
+            config.BANDWIDTH_PER_TRX_TRANSFER,
+            use_only_staked=True,
+            tron_client=tron_client,
+        ):
+            logger.info("Using main account free bandwidth")
+        else:
+            logger.info("Main account has not enough free bandwidth")
+            if config.ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH:
+                logger.info("Burning TRX for bandwidth")
+            else:
+                logger.warning(
+                    "Burning TRX for bandwidth is not allowed. Terminating transfer."
+                )
+                return False, None, None
+
+        with fee_deposit_spend_guard_for_address(
+            main_publ_key,
+            reason="trc20-sweep-account-activation",
+        ):
+            logger.info(f"Activating {onetime_publ_key} by sending 0.1 TRX")
+            tx_trx = tron_client.trx.transfer(
+                main_publ_key,
+                onetime_publ_key,
+                int(0.1 * 1_000_000),
+            )
+            tx_trx._raw_data["expiration"] = current_timestamp() + 60_000
+            tx_trx = tx_trx.build()
+            tx_trx = tx_trx.sign(main_priv_key)
+            tx_trx_res = tx_trx.broadcast().wait()
+        logger.info(f"0.1 TRX sent. Details: {tx_trx_res}")
+        try:
+            onetime_address_resources = tron_client.get_account_resource(
+                onetime_publ_key
+            )
+        except tronpy.exceptions.AddressNotFound:
+            logger.warning(
+                "Onetime acount still not on chain after activation. "
+                "Terminating transfer."
+            )
+            return False, tx_trx_res, None
+        return True, tx_trx_res, onetime_address_resources
+
+
 def ensure_onetime_bandwidth(onetime_publ_key: str, tron_client) -> bool:
     required_bandwidth = config.BANDWIDTH_PER_TRC20_TRANSFER_CALL
     logger.info("Check onetime account bandwidth before energy provisioning")
@@ -284,6 +331,37 @@ def ensure_onetime_bandwidth(onetime_publ_key: str, tron_client) -> bool:
         )
         return False
 
+    return True
+
+
+def ensure_usdt_sweep_resources(
+    onetime_publ_key,
+    main_publ_key,
+    balance,
+    tron_client,
+) -> bool:
+    try:
+        quote = ensure_usdt_transfer_resources(
+            onetime_publ_key,
+            main_publ_key,
+            balance,
+            tron_client=tron_client,
+        )
+    except UsdtResourceError as exc:
+        logger.warning(
+            "TRON USDT sweep resources are not ready. "
+            f"source={onetime_publ_key} destination={main_publ_key} "
+            f"amount={balance} code={exc.code} temporary={exc.temporary} "
+            f"provider_order_accepted={exc.provider_order_accepted} "
+            f"provider_task_id={exc.provider_task_id}. Leaving sweep for retry."
+        )
+        return False
+
+    logger.info(
+        "TRON USDT sweep resources are ready. "
+        f"source={onetime_publ_key} destination={main_publ_key} amount={balance} "
+        f"details={quote.to_dict() if quote is not None else None}"
+    )
     return True
 
 
@@ -320,8 +398,14 @@ def transfer_trc20_from(onetime_acc, symbol, txid=None):
 
     tx_trx_res = None
     used_trx_burn_fallback = False
-    use_refee_energy_provider = config.ENERGY_PROVIDER == "refee"
-    use_external_energy_provider = config.ENERGY_PROVIDER in {"refee", "profeex"}
+    use_external_provider_config = config.ENERGY_PROVIDER in {"refee", "profeex"}
+    use_external_usdt_provider = symbol == "USDT" and use_external_provider_config
+    use_refee_energy_provider = (
+        config.ENERGY_PROVIDER == "refee" and not use_external_usdt_provider
+    )
+    use_external_energy_provider = (
+        use_external_provider_config and not use_external_usdt_provider
+    )
     use_staking_energy_provider = (
         config.ENERGY_PROVIDER == "staking" and config.ENERGY_DELEGATION_MODE
     )
@@ -340,7 +424,27 @@ def transfer_trc20_from(onetime_acc, symbol, txid=None):
             f"Balance OK: {balance} {symbol}. Threshold: {min_threshold} {symbol}"
         )
 
-    if use_energy_provider:
+    if use_external_usdt_provider:
+        (
+            source_active,
+            tx_trx_res,
+            _onetime_address_resources,
+        ) = ensure_trc20_sweep_source_active(
+            tron_client,
+            main_publ_key,
+            main_priv_key,
+            onetime_publ_key,
+        )
+        if not source_active:
+            return
+        if not ensure_usdt_sweep_resources(
+            onetime_publ_key,
+            main_publ_key,
+            balance,
+            tron_client,
+        ):
+            return
+    elif use_energy_provider:
         # Bind once for both acquire (delegation) and release (post-transfer undelegate) calls.
         provider = get_energy_provider(tron_client=tron_client)
         logger.info(f"Using energy provider: {config.ENERGY_PROVIDER}")
@@ -371,73 +475,18 @@ def transfer_trc20_from(onetime_acc, symbol, txid=None):
                     )
                     return
 
-        try:
-            onetime_address_resources = tron_client.get_account_resource(
-                onetime_publ_key
-            )
-            logger.info(
-                f"Onetime {onetime_publ_key} is already on chain, skipping activation. Resource details {onetime_address_resources=}"
-            )
-        except tronpy.exceptions.AddressNotFound:
-            TRX_FOR_ACTIVATION = "1.1"
-            logger.info(
-                f"Check if main account has {TRX_FOR_ACTIVATION} TRX for activation"
-            )
-            main_trx_balance = tron_client.get_account_balance(main_publ_key)
-            logger.info(f"Main account balance: {main_trx_balance} TRX")
-            if main_trx_balance < Decimal(TRX_FOR_ACTIVATION):
-                logger.warning(
-                    f"Not enough TRX to activate {onetime_publ_key}. Terminating transfer."
-                )
-                return
-            else:
-                logger.info("Main account TRX balance OK.")
-
-            logger.info("Check main account free bandwidth")
-            if has_free_bw(
-                main_publ_key,
-                config.BANDWIDTH_PER_TRX_TRANSFER,
-                use_only_staked=True,
-                tron_client=tron_client,
-            ):
-                logger.info("Using main account free bandwidth")
-            else:
-                logger.info("Main account has not enough free bandwidth")
-                if config.ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH:
-                    logger.info("Burning TRX for bandwidth")
-                else:
-                    logger.warning(
-                        "Burning TRX for bandwidth is not allowed. Terminating transfer."
-                    )
-                    return
-
-            with fee_deposit_spend_guard_for_address(
-                main_publ_key,
-                reason="trc20-sweep-account-activation",
-            ):
-                logger.info(f"Activating {onetime_publ_key} by sending 0.1 TRX")
-                tx_trx = tron_client.trx.transfer(
-                    main_publ_key,
-                    onetime_publ_key,
-                    int(0.1 * 1_000_000),
-                )
-                tx_trx._raw_data["expiration"] = current_timestamp() + 60_000
-                tx_trx = tx_trx.build()
-                tx_trx = tx_trx.sign(main_priv_key)
-                tx_trx_res = tx_trx.broadcast().wait()
-            logger.info(f"0.1 TRX sent. Details: {tx_trx_res}")
-            onetime_address_resources = tron_client.get_account_resource(
-                onetime_publ_key
-            )
-            try:
-                onetime_address_resources = tron_client.get_account_resource(
-                    onetime_publ_key
-                )
-            except tronpy.exceptions.AddressNotFound:
-                logger.warning(
-                    "Onetime acount still not on chain after activation. Terminating transfer."
-                )
-                return
+        (
+            source_active,
+            tx_trx_res,
+            onetime_address_resources,
+        ) = ensure_trc20_sweep_source_active(
+            tron_client,
+            main_publ_key,
+            main_priv_key,
+            onetime_publ_key,
+        )
+        if not source_active:
+            return
 
         if not ensure_onetime_bandwidth(onetime_publ_key, tron_client):
             return

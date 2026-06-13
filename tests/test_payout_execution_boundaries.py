@@ -696,6 +696,105 @@ class PayoutExecutionBoundariesTests(unittest.TestCase):
         self.assertFalse(status["reconciliation_required"])
         self.assertEqual(events[0][2], True)
 
+    def test_temporary_provider_failed_resource_error_retries_without_pre_broadcast_failure(self):
+        from app import payout_resources
+
+        self.submit()
+        events = []
+
+        def resource_ensurer(
+            destination, amount, tron_client=None, allow_destination_activation=False
+        ):
+            events.append((destination, amount, allow_destination_activation))
+            raise payout_resources.PayoutResourceError(
+                "Temporary provider outage",
+                code="PROVIDER_FAILED",
+                temporary=True,
+            )
+
+        status = self.store_module.PayoutExecutionStore.execute(
+            "1",
+            wallet=BoundaryWallet(events, self.row),
+            resource_ensurer=resource_ensurer,
+            lease_owner="worker-1",
+        )
+
+        self.assertEqual(status["state"], "RECEIVED")
+        self.assertEqual(status["failure_class"], "TRANSIENT")
+        self.assertEqual(status["error_code"], "PROVIDER_FAILED")
+        self.assertFalse(status["reconciliation_required"])
+        self.assertEqual(events[0][2], True)
+
+    def test_temporary_resource_estimate_and_read_errors_retry_without_pre_broadcast_failure(self):
+        from app import payout_resources
+
+        for code in ("RESOURCE_ESTIMATE_UNAVAILABLE", "RESOURCE_READ_FAILED"):
+            with self.subTest(code=code):
+                self.setUp()
+                self.submit()
+                events = []
+
+                def resource_ensurer(
+                    destination,
+                    amount,
+                    tron_client=None,
+                    allow_destination_activation=False,
+                ):
+                    events.append((destination, amount, allow_destination_activation))
+                    raise payout_resources.PayoutResourceError(
+                        "Temporary resource outage",
+                        code=code,
+                        temporary=True,
+                    )
+
+                status = self.store_module.PayoutExecutionStore.execute(
+                    "1",
+                    wallet=BoundaryWallet(events, self.row),
+                    resource_ensurer=resource_ensurer,
+                    lease_owner="worker-1",
+                )
+
+                self.assertEqual(status["state"], "RECEIVED")
+                self.assertEqual(status["failure_class"], "TRANSIENT")
+                self.assertEqual(status["error_code"], code)
+                self.assertFalse(status["reconciliation_required"])
+                self.assertEqual(events[0][2], True)
+
+    def test_provider_accepted_resource_error_does_not_auto_retry(self):
+        from app import payout_resources
+
+        self.submit()
+        events = []
+
+        def resource_ensurer(
+            destination,
+            amount,
+            tron_client=None,
+            allow_destination_activation=False,
+        ):
+            events.append((destination, amount, allow_destination_activation))
+            raise payout_resources.PayoutResourceError(
+                "Resource provider order was accepted but resources are not visible",
+                code="RESOURCE_RECHECK_FAILED",
+                temporary=True,
+                provider_order_accepted=True,
+                provider_task_id="task-1",
+            )
+
+        status = self.store_module.PayoutExecutionStore.execute(
+            "1",
+            wallet=BoundaryWallet(events, self.row),
+            resource_ensurer=resource_ensurer,
+            lease_owner="worker-1",
+        )
+
+        self.assertEqual(status["state"], "FAILED_PRE_BROADCAST")
+        self.assertEqual(status["failure_class"], "PREFLIGHT")
+        self.assertEqual(status["error_code"], "RESOURCE_RECHECK_FAILED")
+        self.assertFalse(status["reconciliation_required"])
+        self.assertEqual(events[0][2], True)
+        self.assertTrue(self.row()["resource_reservation_id"])
+
     def test_terminal_activation_failure_stays_failed_pre_broadcast_without_reconciliation(self):
         self.submit()
         events = []

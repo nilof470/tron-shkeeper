@@ -45,11 +45,15 @@ class Phase2ReviewFixTests(unittest.TestCase):
     def test_transfer_trc20_from_passes_selected_tron_client_to_bandwidth_checks(self):
         from app import tasks
 
-        source = inspect.getsource(tasks.transfer_trc20_from)
-        tree = ast.parse(source)
+        sources = [
+            inspect.getsource(tasks.transfer_trc20_from),
+            inspect.getsource(tasks.ensure_trc20_sweep_source_active),
+        ]
+        trees = [ast.parse(source) for source in sources]
 
         has_free_bw_calls = [
             node
+            for tree in trees
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)

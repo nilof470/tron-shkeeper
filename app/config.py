@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     ENERGY_DELEGATION_MODE_ENERGY_ACCOUNT_PUB_KEY: Optional[str] = None
     ENERGY_PROVIDER: Literal["staking", "refee", "profeex"] = "staking"
     BANDWIDTH_PROVIDER: Literal["disabled", "refee", "profeex"] = "disabled"
+    TRON_USDT_RESOURCE_FALLBACK_PROVIDER: Literal["disabled", "refee"] = "disabled"
     REFEE: Optional[Json[RefeeConfig]] = None
     PROFEEX: Optional[Json[ProfeeXConfig]] = None
     REFEE_FIXED_ENERGY_ORDER_AMOUNT: int = Field(65_000, ge=0)
@@ -218,6 +219,14 @@ class Settings(BaseSettings):
                 "PROFEEX must be configured when BANDWIDTH_PROVIDER='profeex'"
             )
         if (
+            self.TRON_USDT_RESOURCE_FALLBACK_PROVIDER == "refee"
+            and self.REFEE is None
+        ):
+            raise ValueError(
+                "REFEE must be configured when "
+                "TRON_USDT_RESOURCE_FALLBACK_PROVIDER='refee'"
+            )
+        if (
             self.ENERGY_PROVIDER == "refee"
             and self.REFEE is not None
             and self.REFEE_FIXED_ENERGY_ORDER_AMOUNT > 0
@@ -240,10 +249,10 @@ class Settings(BaseSettings):
                 )
         if (
             self.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED
-            and self.PROFEEX is None
+            and self.ENERGY_PROVIDER not in {"profeex", "refee"}
         ):
             raise ValueError(
-                "PROFEEX must be configured when "
+                "ENERGY_PROVIDER must be 'profeex' or 'refee' when "
                 "TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true"
             )
         if (

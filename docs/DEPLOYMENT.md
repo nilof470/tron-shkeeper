@@ -16,8 +16,8 @@ Use the official SHKeeper deployment model:
 - Helm chart `vsys-host/shkeeper`
 - custom private GHCR image for `tron-shkeeper`
 - Kubernetes `imagePullSecret` for the private image
-- re:Fee or ProfeeX as the TRC20 energy provider
-- ProfeeX as the onetime-wallet bandwidth provider
+- ProfeeX as the primary TRON USDT energy and bandwidth provider
+- re:Fee as fallback for ProfeeX failures before accepted/ambiguous orders
 
 The base chart runs the TRON sidecar as one pod with three containers:
 
@@ -204,7 +204,10 @@ tron_shkeeper:
   extraEnv:
     ENERGY_PROVIDER: profeex
     BANDWIDTH_PROVIDER: profeex
+    TRON_USDT_RESOURCE_FALLBACK_PROVIDER: refee
     PROFEEX: '{"api_key":"REPLACE_WITH_PROFEEX_API_KEY","energy_duration_label":"1h","bandwidth_duration_label":"1h","currency":"TRX","fixed_energy_order_amount":65000,"fixed_bandwidth_order_amount":350}'
+    REFEE: '{"api_key":"REPLACE_WITH_REFEE_API_KEY","rent_duration_label":"1h"}'
+    REFEE_FIXED_ENERGY_ORDER_AMOUNT: "65000"
     TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED: "false"
     TRON_USDT_PAYOUT_QUEUE: tron_usdt_fee_payouts
     ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT: "false"
@@ -222,8 +225,13 @@ usdc:
 
 Notes:
 
-- `ENERGY_PROVIDER=refee` rents TRC20 transfer energy from re:Fee.
-- `ENERGY_PROVIDER=profeex` rents TRC20 transfer energy from ProfeeX.
+- `ENERGY_PROVIDER=profeex` and `BANDWIDTH_PROVIDER=profeex` make ProfeeX the
+  primary TRON USDT energy and bandwidth provider.
+- `TRON_USDT_RESOURCE_FALLBACK_PROVIDER=refee` falls back to re:Fee for USDT
+  payout and sweep resource provisioning only when ProfeeX fails before an
+  accepted or ambiguous order/task.
+- `ENERGY_PROVIDER=refee` and `BANDWIDTH_PROVIDER=refee` remain supported for
+  direct re:Fee primary mode.
 - `BANDWIDTH_PROVIDER=profeex` rents onetime-wallet bandwidth from ProfeeX only
   when the wallet does not already have enough bandwidth for the TRC20 transfer.
 - `BANDWIDTH_PROVIDER=disabled` preserves the old behavior: the sweep uses only
@@ -234,14 +242,16 @@ Notes:
   Flash resources are not used because they require the target address to have
   its own consumed staked resources.
 - `ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT=false` prevents fallback to
-  funding onetime wallets for TRC20 transfer fee burn if re:Fee fails. This
-  fallback remains re:Fee-only and is not used for ProfeeX failures.
+  funding onetime wallets for TRC20 transfer fee burn if external resource
+  providers fail.
 - `ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_FOR_BANDWITH=true` allows TRX burn for
   account activation bandwidth. Keep this only if activation burn is acceptable.
-- `REFEE_FIXED_ENERGY_ORDER_AMOUNT=65000` ensures at least 65k energy is
-  available before a USDT sweep. Set it to `0` to return to fullnode
-  estimate-based sizing. Nonzero values must be greater than or equal to the
-  configured re:Fee `min_energy_order_amount`.
+- `REFEE_FIXED_ENERGY_ORDER_AMOUNT=65000` is a re:Fee order default/lower bound,
+  not the USDT transfer estimate. Shared USDT provisioning uses ProfeeX estimate
+  first and re:Fee `/api/functions/cost/{source_address}` as fallback. Nonzero
+  values must be greater than or equal to the configured re:Fee
+  `min_energy_order_amount`; strict provisioning can request more when the
+  estimate requires it.
 - `USDT_MIN_TRANSFER_THRESHOLD` must be lower than the smallest USDT payment that
   should be swept. The TRC20 sweep check requires `balance > threshold`.
 - `TRX_MIN_TRANSFER_THRESHOLD` prevents sweeping activation dust. TRX sweep uses
@@ -259,12 +269,13 @@ provisioning independently:
 
 | Env var | Default | Required when | Meaning |
 | --- | --- | --- | --- |
-| `ENERGY_PROVIDER` | `staking` | Always optional | Energy provider selector for TRC20 sweeps. Allowed values: `staking`, `refee`, `profeex`. `staking` is active only when `ENERGY_DELEGATION_MODE=true`; with the default `ENERGY_DELEGATION_MODE=false`, the sidecar uses the legacy TRX burn funding flow. |
-| `BANDWIDTH_PROVIDER` | `disabled` | Always optional | Bandwidth provider for the onetime wallet before energy provisioning. Allowed values: `disabled`, `refee`, `profeex`. |
-| `REFEE` | empty | `ENERGY_PROVIDER=refee` or `BANDWIDTH_PROVIDER=refee` | re:Fee JSON config with `api_key` and optional duration/order settings. |
+| `ENERGY_PROVIDER` | `staking` | Always optional | Energy provider selector for TRC20 sweeps and USDT payout resource provisioning. Allowed values: `staking`, `refee`, `profeex`. `staking` is active only when `ENERGY_DELEGATION_MODE=true`; with the default `ENERGY_DELEGATION_MODE=false`, the sidecar uses the legacy TRX burn funding flow. |
+| `BANDWIDTH_PROVIDER` | `disabled` | Always optional | Bandwidth provider for the sender/source wallet before energy provisioning. Allowed values: `disabled`, `refee`, `profeex`. |
+| `TRON_USDT_RESOURCE_FALLBACK_PROVIDER` | `disabled` | Optional | Set to `refee` to use re:Fee fallback for USDT payout and sweep when ProfeeX fails before accepted/ambiguous order. |
+| `REFEE` | empty | `ENERGY_PROVIDER=refee`, `BANDWIDTH_PROVIDER=refee`, or `TRON_USDT_RESOURCE_FALLBACK_PROVIDER=refee` | re:Fee JSON config with `api_key` and optional duration/order settings. |
 | `PROFEEX` | empty | `ENERGY_PROVIDER=profeex` or `BANDWIDTH_PROVIDER=profeex` | ProfeeX JSON config with `api_key`, duration, currency, and fixed order settings. |
-| `REFEE_FIXED_ENERGY_ORDER_AMOUNT` | `65000` | Optional | Fixed re:Fee energy order amount. Use `0` to size from the fullnode estimate. |
-| `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED` | `false` | Optional | Enables fee-deposit resource estimation and provisioning before single USDT payout from the TRON fee wallet. Requires `PROFEEX` because ProfeeX provides the destination-specific USDT energy estimate. |
+| `REFEE_FIXED_ENERGY_ORDER_AMOUNT` | `65000` | Optional | re:Fee energy order default/lower bound. Shared USDT provisioning can request more when the provider estimate requires it. |
+| `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED` | `false` | Optional | Enables fee-deposit resource estimation and provisioning before single USDT payout from the TRON fee wallet. Requires `ENERGY_PROVIDER=profeex` with `PROFEEX`, or direct `ENERGY_PROVIDER=refee` with `REFEE`; `TRON_USDT_RESOURCE_FALLBACK_PROVIDER=refee` can add re:Fee estimate/rental fallback to ProfeeX primary mode. |
 | `TRON_USDT_PAYOUT_QUEUE` | `tron_usdt_fee_payouts` | Optional | Dedicated Celery queue for single USDT payouts from the fee wallet. The queue must have exactly one worker slot. |
 | `TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC` | `900` | Optional | Redis lock TTL for serializing single USDT payout resource provisioning and transfer. |
 | `TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC` | `900` | Optional | Maximum time a concurrent single USDT payout task waits for the resource lock before failing. |
@@ -276,10 +287,17 @@ TRON daily bandwidth recovery or manual delegation.
 
 `ENERGY_PROVIDER=profeex` uses ordinary ProfeeX energy delegation. With the
 default `fixed_energy_order_amount=65000`, the app treats `64500` available
-energy as sufficient to avoid duplicate fixed rentals.
+energy as sufficient to avoid duplicate fixed rentals when no higher strict
+estimate is required.
 
 `BANDWIDTH_PROVIDER=profeex` uses ordinary ProfeeX bandwidth delegation. It
 does not rent bandwidth when the onetime wallet already has enough bandwidth.
+
+Fallback is allowed only before ProfeeX accepts or ambiguously accepts an order.
+Do not switch providers after an accepted-looking response without a usable id,
+polling timeout, terminal order failure, or post-active/post-delegation resource
+read/recheck failure. After any accepted provider order/task, the transfer stops
+before broadcast because the resource rental may still complete.
 
 When `TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true`, single USDT payouts
 are routed to `TRON_USDT_PAYOUT_QUEUE`. A dedicated worker for this queue is
@@ -600,7 +618,7 @@ Watch worker logs:
 kubectl logs -n shkeeper deployment/tron-shkeeper -c tasks -f
 ```
 
-Expected successful flow with `ENERGY_PROVIDER=profeex`:
+Expected successful flow with the production primary/fallback config:
 
 ```text
 Balance OK
@@ -611,8 +629,11 @@ ProfeeX energy successfully delegated
 ... USDT sent to fee_deposit
 ```
 
-With `ENERGY_PROVIDER=refee`, the provider-specific lines say
+If ProfeeX is unavailable before accepting an order and
+`TRON_USDT_RESOURCE_FALLBACK_PROVIDER=refee`, the provider-specific lines say
 `Requesting re:Fee energy rental` and `re:Fee energy successfully delegated`.
+After an accepted or ambiguous ProfeeX task, the sweep or payout waits/stops
+before broadcast instead of switching providers.
 
 If a retry is needed without waiting for the periodic scanner:
 
@@ -728,8 +749,7 @@ When an onetime address is not active, the sidecar sends `0.1 TRX` from
 is `true`, TRX may burn for the activation transfer bandwidth.
 
 Keep `ENERGY_DELEGATION_MODE_ALLOW_BURN_TRX_ON_PAYOUT=false` to prevent fallback
-TRX burn for the USDT sweep itself when re:Fee fails. ProfeeX failures terminate
-without using this re:Fee-only fallback.
+TRX burn for the USDT sweep itself when external resource providers fail.
 
 ### re:Fee 403 whitelist error
 

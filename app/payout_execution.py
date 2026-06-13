@@ -33,6 +33,11 @@ LEGACY_RETRYABLE_PRE_BROADCAST_ERROR_CODES = {
     "PAYOUT_RESOURCE_LOCK_UNAVAILABLE",
 }
 RETRYABLE_TEMPORARY_PRE_BROADCAST_ERROR_CODES = {
+    "PROFEEX_ESTIMATE_UNAVAILABLE",
+    "RESOURCE_ESTIMATE_UNAVAILABLE",
+    "RESOURCE_READ_FAILED",
+    "PROVIDER_FAILED",
+    "RESOURCE_RECHECK_FAILED",
     "PAYOUT_DESTINATION_ACTIVATION_PENDING",
     "PAYOUT_DESTINATION_ACTIVATION_UNAVAILABLE",
     "PAYOUT_DESTINATION_ACTIVATION_DUPLICATE",
@@ -57,6 +62,8 @@ class PayoutExecutionError(ValueError):
 
 
 def _is_retryable_pre_broadcast_error(exc):
+    if getattr(exc, "provider_order_accepted", False):
+        return False
     error_code = getattr(exc, "code", None)
     if error_code in LEGACY_RETRYABLE_PRE_BROADCAST_ERROR_CODES:
         return not hasattr(exc, "temporary") or getattr(exc, "temporary", False)

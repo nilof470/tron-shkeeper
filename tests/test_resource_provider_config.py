@@ -35,6 +35,22 @@ class ResourceProviderConfigTests(unittest.TestCase):
         ):
             Settings(ENERGY_PROVIDER="profeex", BANDWIDTH_PROVIDER="disabled")
 
+    def test_refee_required_for_tron_usdt_resource_fallback_provider(self):
+        with self.assertRaisesRegex(
+            ValidationError,
+            "REFEE must be configured when "
+            "TRON_USDT_RESOURCE_FALLBACK_PROVIDER='refee'",
+        ):
+            Settings(TRON_USDT_RESOURCE_FALLBACK_PROVIDER="refee")
+
+    def test_refee_tron_usdt_resource_fallback_provider_is_valid_when_configured(self):
+        settings = Settings(
+            TRON_USDT_RESOURCE_FALLBACK_PROVIDER="refee",
+            REFEE='{"api_key":"secret"}',
+        )
+
+        self.assertEqual(settings.TRON_USDT_RESOURCE_FALLBACK_PROVIDER, "refee")
+
     def test_staking_energy_with_refee_bandwidth_provider_is_valid(self):
         settings = Settings(
             ENERGY_PROVIDER="staking",
@@ -76,16 +92,18 @@ class ResourceProviderConfigTests(unittest.TestCase):
         self.assertEqual(settings.PROFEEX.fixed_energy_order_amount, 65_000)
         self.assertEqual(settings.PROFEEX.fixed_bandwidth_order_amount, 350)
 
-    def test_usdt_payout_resource_provisioning_requires_profeex_estimator_config(self):
+    def test_usdt_payout_resource_provisioning_requires_external_estimator_config(self):
         with self.assertRaisesRegex(
             ValidationError,
-            "PROFEEX must be configured when "
+            "ENERGY_PROVIDER must be 'profeex' or 'refee' when "
             "TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=true",
         ):
             Settings(TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True)
 
     def test_usdt_payout_resource_provisioning_is_valid_when_profeex_configured(self):
         settings = Settings(
+            ENERGY_PROVIDER="profeex",
+            BANDWIDTH_PROVIDER="profeex",
             TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
             PROFEEX='{"api_key":"secret"}',
         )
@@ -94,6 +112,18 @@ class ResourceProviderConfigTests(unittest.TestCase):
         self.assertEqual(settings.TRON_USDT_PAYOUT_QUEUE, "tron_usdt_fee_payouts")
         self.assertEqual(settings.TRON_USDT_PAYOUT_RESOURCE_LOCK_TTL_SEC, 900)
         self.assertEqual(settings.TRON_USDT_PAYOUT_RESOURCE_LOCK_WAIT_SEC, 900)
+
+    def test_usdt_payout_resource_provisioning_is_valid_when_refee_primary_configured(self):
+        settings = Settings(
+            ENERGY_PROVIDER="refee",
+            BANDWIDTH_PROVIDER="refee",
+            TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
+            REFEE='{"api_key":"secret"}',
+        )
+
+        self.assertTrue(settings.TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED)
+        self.assertEqual(settings.ENERGY_PROVIDER, "refee")
+        self.assertEqual(settings.BANDWIDTH_PROVIDER, "refee")
 
     def test_auto_activate_destination_requires_resource_provisioning_enabled(self):
         with self.assertRaisesRegex(
@@ -117,6 +147,8 @@ class ResourceProviderConfigTests(unittest.TestCase):
 
     def test_auto_activate_destination_config_defaults(self):
         settings = Settings(
+            ENERGY_PROVIDER="profeex",
+            BANDWIDTH_PROVIDER="profeex",
             TRON_USDT_PAYOUT_RESOURCE_PROVISIONING_ENABLED=True,
             TRON_USDT_PAYOUT_AUTO_ACTIVATE_DESTINATION=True,
             PROFEEX='{"api_key":"secret"}',
